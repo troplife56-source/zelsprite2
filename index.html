@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Zelda-like Prototype — Phaser 3</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{image-rendering:pixelated} /* NEAREST neighbor : aucun flou lors du zoom */
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<script>
+/* =====================================================================
+   CONSTANTES & DONNÉES
+   Résolution logique 256x240 (type NES). Une salle = 16x14 tuiles de 16px.
+   Le monde = 4 salles alignées horizontalement. HUD = bandeau de 16px en haut.
+   ===================================================================== */
+const W=256,H=240,T=16,RW=256,RH=224,YOFF=16,GW=3,NROOMS=9,START=3,BOSS_ROOM=2,BOSS_HP=6;
+const DIRS={up:{x:0,y:-1},down:{x:0,y:1},left:{x:-1,y:0},right:{x:1,y:0}};
+// NOUVEAU : le monde est une grille GWxGW de salles (id = ligne*GW + colonne)
+const ox=r=>(r%GW)*RW, oy=r=>Math.floor(r/GW)*RH+YOFF;   // coin haut-gauche d'une salle
+const rx=(room,col)=>ox(room)+col*T+8;                    // (salle, colonne) -> x monde
+const ry=(room,row)=>oy(room)+row*T+8;                    // (salle, ligne)   -> y monde
+
+
+// Contenu de chaque salle, en coordonnées de tuiles [col,row].
+// ATTENTION : lignes 6-7 des colonnes 0 et 15 = couloirs entre salles, à laisser libres.
+const LAYOUT=[
+  // ex = côtés ouverts vers les salles voisines (u/d/l/r), symétrisés automatiquement plus bas.
+  /*0*/{stone:1,ex:'rd',pot:[[2,2],[13,2]],spikes:[[5,6],[5,7],[11,6],[11,7]],chest:[[8,3,'bow']]},   // couloir à pics + ARC
+  /*1*/{stone:1,ex:'rd',lock:true,bush:[[3,10],[12,10]],enemy:[['octorok',4,3],['octorok',12,3],['slime',8,10]]}, // porte à clé -> boss
+  /*2*/{stone:1,boss:[8,6]},                                                                            // salle du boss
+  /*3*/{ex:'r',bush:[[3,3],[12,3],[3,11],[12,11]],pot:[[6,10],[10,10]],npc:[8,5]},                       // village (départ)
+  /*4*/{ex:'rd',gate:true,plate:[[11,9]],bush:[[3,3],[3,10],[12,3]],enemy:[['slime',5,5],['slime',10,4],['octorok',4,10]]}, // dalle -> grille
+  /*5*/{stone:1,ex:'d',fire:[[4,4],[10,10]],chest:[[12,3,'key']]},                                      // boules de feu + CLÉ
+  /*6*/{stone:1,ex:'r',pot:[[3,3],[4,3],[3,4]],chest:[[12,10,'rubies']],enemy:[['slime',8,6]]},
+  /*7*/{stone:1,ex:'r',pot:[[3,10],[12,10]],enemy:[['octorok',4,4],['octorok',12,9]]},
+  /*8*/{stone:1,fire:[[8,5]],chest:[[3,10,'rubies']],pot:[[12,3]]}
+];
+const OPEN=LAYOUT.map(()=>({}));   // OPEN[salle] = {u,d,l,r} côtés ouverts
+LAYOUT.forEach((L,i)=>[...(L.ex||'')].forEach(d=>{const j=i+{u:-GW,d:GW,l:-1,r:1}[d];OPEN[i][d]=1;OPEN[j][{u:'d',d:'u',l:'r',r:'l'}[d]]=1;}));
+
+// Persistance du meilleur score (try/catch : localStorage peut être bloqué)
+const store={
+  get(){try{return +localStorage.getItem('zeldaProto.best')||0}catch(e){return 0}},
+  set(v){try{localStorage.setItem('zeldaProto.best',v)}catch(e){}}
+};
+
+/* =====================================================================
+   AUDIO PROCÉDURAL (Web Audio API) — zéro fichier externe
+   ===================================================================== */
+const SFX={
+  ctx:null,
+  // NOUVEAU — Musique chiptune : mélodie carrée + basse, jouées par un timer (1 note / 230 ms)
+  musicOn:true,mood:'calm',step:0,mt:null,
+  unlock(){try{this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();this.ctx.resume();}catch(e){}},
+  startMusic(){
+    if(this.mt)return;                                   // une seule boucle, même après un restart
+    ['keydown','pointerdown'].forEach(e=>window.addEventListener(e,()=>this.unlock())); // les navigateurs exigent un geste
+    const M={calm:[0,3,7,3,5,7,10,7,12,10,7,5,3,5,7,null],   // demi-tons depuis La3 (gamme pentatonique mineure)
+             boss:[0,3,0,6,0,3,0,7,0,3,0,6,0,10,8,6]};       // thème plus nerveux pour le donjon
+    const f=n=>220*Math.pow(2,n/12);
+    this.mt=setInterval(()=>{
+      if(!this.musicOn||!this.ctx||this.ctx.state!=='running')return;
+      const i=this.step++,m=this.mood,n=M[m][i%16];
+      if(n!==null)this.tone(f(n),.2,'square',0,.018);                                      // mélodie discrète
+      if(m==='calm'&&i%4===0)this.tone(f([-12,-12,-5,-7][(i>>2)%4]),.7,'triangle',0,.05);  // basse douce
+      if(m==='boss'&&i%2===0)this.tone(f(i%8===0?-12:-9),.12,'sawtooth',0,.03);            // basse martelée
+    },230);
+  },
+  // Un "bip" : fréquence, durée, forme d'onde, glissando, volume, délai
+  tone(f,d,type='square',slide=0,vol=.07,delay=0){
+    try{
+      this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();
+      const c=this.ctx; if(c.state==='suspended')c.resume(); // débloqué par le 1er appui clavier
+      const t=c.currentTime+delay,o=c.createOscillator(),g=c.createGain();
+      o.type=type;o.frequency.setValueAtTime(f,t);
+      if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(20,f+slide),t+d);
+      g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(.001,t+d);
+      o.connect(g);g.connect(c.destination);o.start(t);o.stop(t+d);
+    }catch(e){}
+  },
+  play(n){
+    switch(n){
+      case'sword':this.tone(700,.12,'sawtooth',-500);break;
+      case'hit':this.tone(180,.1,'square',-100,.1);break;
+      case'ruby':this.tone(988,.07);this.tone(1319,.14,'square',0,.07,.07);break;
+      case'heart':this.tone(660,.08,'triangle');this.tone(880,.12,'triangle',0,.08,.08);break;
+      case'chest':[523,659,784,1047].forEach((f,i)=>this.tone(f,.12,'triangle',0,.1,i*.1));break;
+      case'hurt':this.tone(300,.25,'sawtooth',-220,.1);break;
+      case'break':this.tone(260,.1,'square',-150);break;
+      case'shoot':this.tone(400,.1,'triangle',-200);break;
+      case'arrow':this.tone(900,.08,'triangle',-600);break;
+      case'crit':this.tone(900,.05,'square');this.tone(1400,.12,'square',-400,.08,.04);break;
+      case'door':this.tone(110,.3,'square',60,.1);break;
+      case'die':[400,300,200,100].forEach((f,i)=>this.tone(f,.2,'sawtooth',0,.1,i*.15));break;
+    }
+  }
+};
+
+/* =====================================================================
+   GÉNÉRATION DES TEXTURES (pixel art dessiné par code, pas d'assets)
+   ===================================================================== */
+function makeTextures(s){
+  const mk=(key,w,h,fn)=>{ if(s.textures.exists(key))return;
+    const g=s.make.graphics({x:0,y:0,add:false}); fn(g); g.generateTexture(key,w,h); g.destroy(); };
+  const R=(g,c,x,y,w,h)=>g.fillStyle(c,1).fillRect(x,y,w,h); // raccourci rectangle
+
+  // Joueur : 4 directions x 2 frames de marche
+  ['down','up','left','right'].forEach(d=>[0,1].forEach(f=>mk(`p_${d}_${f}`,16,16,g=>{
+    R(g,0x5a3216,5,13+(f?0:1),2,2);R(g,0x5a3216,9,13+(f?1:0),2,2); // pieds alternés
+    R(g,0x2d8a2d,4,7,8,6);                                          // tunique
+    R(g,0xf2c08a,2,8,2,3);R(g,0xf2c08a,12,8,2,3);                   // bras
+    R(g,0xf2c08a,4,1,8,7);R(g,0x2db52d,3,0,10,d==='up'?6:3);       // tête + bonnet
+    if(d==='down'){R(g,0x222222,5,5,2,2);R(g,0x222222,9,5,2,2);}
+    if(d==='left')R(g,0x222222,4,5,2,2);
+    if(d==='right')R(g,0x222222,10,5,2,2);
+  })));
+  mk('slime',16,16,g=>{R(g,0x3a6fe0,2,6,12,8);R(g,0x3a6fe0,4,4,8,2);R(g,0xffffff,5,7,2,2);R(g,0xffffff,9,7,2,2);R(g,0x000000,6,8,1,1);R(g,0x000000,10,8,1,1);});
+  mk('octo',16,16,g=>{R(g,0xd03a2a,2,3,12,10);R(g,0xd03a2a,4,1,8,2);R(g,0xd03a2a,3,13,2,2);R(g,0xd03a2a,7,13,2,2);R(g,0xd03a2a,11,13,2,2);
+    R(g,0xffffff,4,5,3,3);R(g,0xffffff,9,5,3,3);R(g,0x000000,5,6,2,2);R(g,0x000000,10,6,2,2);R(g,0xa02010,6,9,4,3);});
+  // NOUVEAU : PNJ vieillard (barbe blanche, robe bleue, bâton) et boss blindé 32x32
+  mk('npc',16,16,g=>{R(g,0x3a5aa8,4,7,8,8);R(g,0xf2c08a,5,2,6,5);R(g,0xffffff,4,1,8,2);R(g,0xeeeeee,5,6,6,4);
+    R(g,0x222222,6,4,1,1);R(g,0x222222,9,4,1,1);R(g,0x8a5a2a,13,3,1,12);});
+  mk('boss',32,32,g=>{R(g,0x5a2a7a,2,8,28,20);R(g,0x7a4aa0,5,3,22,7);R(g,0xb0b0c0,7,9,18,3);R(g,0x8a8a9a,7,12,18,1);
+    R(g,0xffee00,8,14,5,5);R(g,0xffee00,19,14,5,5);R(g,0xc00000,10,16,2,3);R(g,0xc00000,21,16,2,3);
+    R(g,0x3a1a4a,12,21,8,6);R(g,0x5a2a7a,3,28,6,3);R(g,0x5a2a7a,13,28,6,3);R(g,0x5a2a7a,23,28,6,3);
+    R(g,0xb0b0c0,2,8,3,6);R(g,0xb0b0c0,27,8,3,6);});
+  // NOUVEAU : dalles, pics (3 états), boule de feu, arc et flèche
+  mk('plate',16,16,g=>{R(g,0x6b6b7a,0,0,16,16);R(g,0x3a3a4a,1,1,14,14);R(g,0x8a8a9a,3,3,10,10);R(g,0x55556a,5,5,6,6);});
+  mk('plate_on',16,16,g=>{R(g,0x6b6b7a,0,0,16,16);R(g,0x3a3a4a,1,1,14,14);R(g,0xffd700,4,4,8,8);});
+  const HOLES=[[3,3],[10,3],[3,10],[10,10]];
+  mk('sp0',16,16,g=>{R(g,0x55556a,0,0,16,16);HOLES.forEach(([x,y])=>R(g,0x1a1a22,x,y,3,3));});
+  mk('sp1',16,16,g=>{R(g,0x55556a,0,0,16,16);HOLES.forEach(([x,y])=>{R(g,0x1a1a22,x,y,3,3);R(g,0xcccccc,x+1,y+1,1,1);});});
+  mk('sp2',16,16,g=>{R(g,0x55556a,0,0,16,16);HOLES.forEach(([x,y])=>{R(g,0xe8e8f0,x+1,y-2,1,6);R(g,0xaaaaaa,x,y+2,3,2);});});
+  mk('fireball',12,12,g=>{g.fillStyle(0xff5500,1).fillCircle(6,6,6);g.fillStyle(0xffaa00,1).fillCircle(6,6,4);g.fillStyle(0xffee88,1).fillCircle(6,6,2);});
+  mk('arrow',16,16,g=>{R(g,0x8a5a2a,7,3,2,11);R(g,0xdddddd,6,0,4,1);R(g,0xdddddd,7,1,2,2);R(g,0xdd3333,5,13,2,2);R(g,0xdd3333,9,13,2,2);});
+  mk('bow',16,16,g=>{R(g,0x8a5a2a,10,1,2,2);R(g,0x8a5a2a,12,3,2,10);R(g,0x8a5a2a,10,13,2,2);R(g,0xeeeeee,9,3,1,10);R(g,0xdddddd,2,7,10,1);});
+  mk('rock',8,8,g=>{g.fillStyle(0x9a9a9a,1).fillCircle(4,4,3);R(g,0xdddddd,3,2,2,1);});
+  mk('sword',16,16,g=>{R(g,0xe8e8e8,7,0,2,10);R(g,0xffd700,5,10,6,2);R(g,0x7a4a1a,7,12,2,3);});
+  mk('spark',3,3,g=>R(g,0xffee88,0,0,3,3));
+  // Décor
+  mk('grass',16,16,g=>{R(g,0x4c9a2a,0,0,16,16);[[2,3],[9,2],[12,9],[5,12],[14,14],[7,7]].forEach(([x,y])=>R(g,0x5fb534,x,y,2,1));});
+  mk('stone',16,16,g=>{R(g,0x6b6b7a,0,0,16,16);[[0,0,16,1],[0,8,16,1],[8,0,1,8],[4,8,1,8]].forEach(a=>R(g,0x55556a,...a));});
+  mk('tree',16,16,g=>{R(g,0x174d17,1,0,14,13);R(g,0x238023,2,1,12,9);R(g,0x34a334,4,2,5,4);R(g,0x6b3a1a,6,12,4,4);});
+  mk('bush',16,16,g=>{R(g,0x2f8f2f,1,3,14,11);R(g,0x45b845,2,2,12,6);R(g,0x6fd66f,4,3,3,2);R(g,0x2a7a2a,3,10,10,3);});
+  mk('pot',16,16,g=>{R(g,0xb5651d,3,4,10,10);R(g,0x8a4a12,2,3,12,2);R(g,0xd98a3a,4,6,2,5);});
+  mk('chest_closed',16,16,g=>{R(g,0x8a5a2a,1,6,14,9);R(g,0x6b3f1a,1,3,14,4);R(g,0xffd700,7,6,2,4);R(g,0x3a2008,1,14,14,1);});
+  mk('chest_open',16,16,g=>{R(g,0x8a5a2a,1,6,14,9);R(g,0x6b3f1a,1,0,14,3);R(g,0x2a1405,2,6,12,3);R(g,0xffd700,5,7,6,2);});
+  mk('door',16,32,g=>{R(g,0x7a5230,0,0,16,32);R(g,0x5a3a1c,5,0,1,32);R(g,0x5a3a1c,10,0,1,32);
+    R(g,0x888888,0,6,16,2);R(g,0x888888,0,24,16,2);R(g,0xffd700,6,14,4,5);R(g,0x222222,7,16,2,2);});
+  // Objets
+  mk('key',16,16,g=>{R(g,0xffd700,5,1,6,6);R(g,0xb8860b,7,3,2,2);R(g,0xffd700,7,7,2,8);R(g,0xffd700,9,11,3,2);R(g,0xffd700,9,14,2,1);});
+  mk('heart',16,16,g=>{[[2,3,4,3],[10,3,4,3],[1,4,14,4],[2,8,12,2],[4,10,8,2],[6,12,4,1]].forEach(a=>R(g,0xe02020,...a));R(g,0xffffff,3,4,2,1);});
+  mk('ruby',16,16,g=>{[[7,1,2,1],[6,2,4,1],[5,3,6,2],[5,5,6,5],[6,10,4,1],[7,11,2,2]].forEach(a=>R(g,0x20c040,...a));R(g,0xb0ffc0,6,4,1,3);});
+  mk('relic',16,16,g=>{g.fillStyle(0xffd700,1).fillTriangle(8,1,15,14,1,14);g.fillStyle(0x222222,1).fillTriangle(8,7,11,12,5,12);});
+}
+
+/* =====================================================================
+   CLASSES D'ENTITÉS
+   Chaque entité crée son propre corps physique dans son constructeur
+   (dynamique pour Player/Enemy/Projectile, statique pour le reste).
+   ===================================================================== */
+class Player extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y){
+    super(s,x,y,'p_down_0'); s.add.existing(this); s.physics.add.existing(this);
+    this.body.setSize(10,8).setOffset(3,8);            // hitbox = les pieds (profondeur crédible)
+    this.setCollideWorldBounds(true);
+    this.face='down';this.hp=3;this.maxHp=3;this.speed=72;
+    this.nextAtk=0;this.lockUntil=0;this.invulUntil=0;this.stunUntil=0;
+    ['down','up','left','right'].forEach(d=>s.anims.create({key:'walk_'+d,frames:[{key:`p_${d}_0`},{key:`p_${d}_1`}],frameRate:8,repeat:-1}));
+    // Épée : sprite avec corps physique, désactivé tant qu'on n'attaque pas
+    this.sword=s.physics.add.sprite(x,y,'sword').setVisible(false);
+    this.sword.body.setSize(14,14).setOffset(1,1); this.sword.body.enable=false;
+  }
+  update(t,ix,iy){
+    if(t<this.stunUntil)return;                         // recul en cours : pas de contrôle
+    if(t<this.lockUntil){this.setVelocity(0);return;}   // immobile pendant le coup d'épée
+    if(ix||iy){
+      // Direction d'animation : en diagonale, on garde la face courante si elle est encore pressée
+      if(!iy)this.face=ix<0?'left':'right';
+      else if(!ix)this.face=iy<0?'up':'down';
+      else{const ok=(this.face==='left'&&ix<0)||(this.face==='right'&&ix>0)||(this.face==='up'&&iy<0)||(this.face==='down'&&iy>0);
+           if(!ok)this.face=ix<0?'left':'right';}
+      const n=(ix&&iy)?0.7071:1;                        // normalisation 8 directions
+      this.setVelocity(ix*this.speed*n,iy*this.speed*n);
+      this.anims.play('walk_'+this.face,true);
+    }else{this.setVelocity(0);this.anims.stop();this.setTexture(`p_${this.face}_0`);}
+  }
+  attack(t){
+    if(t<this.nextAtk)return;                           // cooldown
+    this.nextAtk=t+380;this.lockUntil=t+180;this.setVelocity(0);
+    this.anims.stop();this.setTexture(`p_${this.face}_0`);
+    const d=DIRS[this.face],sw=this.sword;
+    sw.setPosition(this.x+d.x*13,this.y+d.y*13-1)
+      .setRotation({up:0,right:Math.PI/2,down:Math.PI,left:-Math.PI/2}[this.face])
+      .setVisible(true).setDepth(this.depth+(this.face==='up'?-1:1));
+    sw.body.enable=true;sw.body.reset(sw.x,sw.y);       // hitbox active ~160ms
+    this.scene.hit=new Set();                           // chaque swing ne touche une cible qu'une fois
+    this.scene.time.delayedCall(160,()=>{if(sw.active){sw.setVisible(false);sw.body.enable=false;}});
+    SFX.play('sword');
+  }
+}
+
+class Projectile extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y){super(s,x,y,'rock');s.add.existing(this);s.physics.add.existing(this);this.body.setSize(6,6).setOffset(1,1);}
+  fire(angle){this.setVelocity(Math.cos(angle)*75,Math.sin(angle)*75);}
+}
+
+class Enemy extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y,type,room){
+    super(s,x,y,type==='octorok'?'octo':'slime'); s.add.existing(this); s.physics.add.existing(this);
+    this.body.setSize(12,10).setOffset(2,5); this.setCollideWorldBounds(true);
+    this.ekind=type;this.room=room;this.hp=2;this.nextAI=0;this.nextShot=s.time.now+1500;this.stunUntil=0;
+  }
+  tick(t,pl){                                           // IA appelée seulement si l'ennemi est dans la salle active
+    if(t<this.stunUntil)return;
+    const dist=Phaser.Math.Distance.Between(this.x,this.y,pl.x,pl.y);
+    if(t>this.nextAI){
+      this.nextAI=t+Phaser.Math.Between(700,1400);
+      if(this.ekind==='slime'&&dist<90)this.scene.physics.moveToObject(this,pl,34); // poursuite
+      else{const a=Phaser.Math.Between(0,3)*Math.PI/2,sp=Math.random()<.3?0:26;this.setVelocity(Math.cos(a)*sp,Math.sin(a)*sp);} // errance
+    }
+    if(this.ekind==='octorok'&&t>this.nextShot&&dist<150){  // tir périodique vers le joueur
+      this.nextShot=t+Phaser.Math.Between(1600,2200);this.scene.shoot(this,pl);
+    }
+    this.setFlipX(((t/250)|0)%2===0);                      // pseudo-animation de marche
+    const bx=ox(this.room),by=oy(this.room);   // reste dans sa salle (grille)
+    this.x=Phaser.Math.Clamp(this.x,bx+24,bx+232);this.y=Phaser.Math.Clamp(this.y,by+24,by+200);
+  }
+  hurt(src,dmg=1){
+    this.hp-=dmg;const a=Math.atan2(this.y-src.y,this.x-src.x);
+    this.setVelocity(Math.cos(a)*140,Math.sin(a)*140);this.stunUntil=this.scene.time.now+220; // knockback
+    this.setTintFill(0xffffff);this.scene.time.delayedCall(100,()=>this.active&&this.clearTint());
+    if(this.hp<=0)this.die();
+  }
+  die(){this.scene.puff(this.x,this.y);this.scene.drop(this.x,this.y,.5);this.destroy();} // surchargé par Boss
+}
+
+/* NOUVEAU — BOSS : Gardien blindé (6 PV). Fonce sur le joueur et tire des rafales en éventail ;
+   sous 50% de vie il passe en "rage" (plus rapide, 5 projectiles, cadence accrue). */
+class Boss extends Enemy{
+  constructor(s,x,y,room){
+    super(s,x,y,'octorok',room);
+    this.ekind='boss';this.setTexture('boss');this.hp=BOSS_HP;this.nextSlam=3000;
+    this.body.setSize(24,20).setOffset(4,10);
+  }
+  tick(t,pl){
+    if(t<this.stunUntil)return;
+    const rage=this.hp<=BOSS_HP/2,s=this.scene;
+    if(t>this.nextAI){this.nextAI=t+900;s.physics.moveToObject(this,pl,rage?62:46);}  // charge
+    if(t>this.nextShot){                                                              // rafale
+      this.nextShot=t+(rage?1400:2100);
+      const n=rage?5:3;for(let i=0;i<n;i++)s.shoot(this,pl,(i-(n-1)/2)*.3);
+      s.shockwave(this.x,this.y,0xff6666);   // NOUVEAU : onde de choc à chaque rafale
+    }
+    if(t>this.nextSlam){   // NOUVEAU : coup au sol télégraphié (flash orange 350 ms) puis onde de choc qui blesse à moins de 48 px
+      this.nextSlam=t+(rage?3000:4200);this.setTint(0xffaa66);
+      s.time.delayedCall(350,()=>{if(!this.active)return;this.clearTint();s.shockwave(this.x,this.y,0xffaa33);s.flashLight(this.x,this.y);
+        if(Phaser.Math.Distance.Between(this.x,this.y,s.player.x,s.player.y)<48)s.hurtPlayer(this);});
+    }
+    this.setFlipX(((t/300)|0)%2===0);
+    this.x=Phaser.Math.Clamp(this.x,ox(this.room)+28,ox(this.room)+228);this.y=Phaser.Math.Clamp(this.y,oy(this.room)+28,oy(this.room)+196);
+  }
+  hurt(src,dmg=1){const s=this.scene;super.hurt(src,dmg);s.syncBoss();}   // met la barre de vie à jour
+  die(){
+    const s=this.scene,x=this.x,y=this.y;
+    for(let i=0;i<4;i++)s.puff(x+Phaser.Math.Between(-12,12),y+Phaser.Math.Between(-12,12));
+    s.spawnPickup(x-14,y+8,'heart');s.spawnPickup(x+14,y+8,'heart');
+    this.destroy();s.spawnRelic(x,y);s.msg('Le gardien est vaincu !');
+  }
+}
+
+/* NOUVEAU — PNJ immobile et solide, avec invite "E" */
+class NPC extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y){
+    super(s,x,y,'npc');s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(y+8);
+    this.prompt=s.add.text(x,y-16,'E',{font:'bold 8px monospace',color:'#fff',backgroundColor:'#000'}).setOrigin(.5).setDepth(9000).setVisible(false);
+  }
+}
+
+/* NOUVEAU — Dalle de pression : s'enfonce au contact du joueur (ou d'une flèche) et ouvre les grilles */
+class Plate extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y){super(s,x,y,'plate');s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(1);this.pressed=false;}
+}
+/* NOUVEAU — Pics : rétractés 1.4 s -> alerte 0.3 s -> sortis 0.7 s (dangereux seulement sortis) */
+class Spikes extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y,off,room){super(s,x,y,'sp0');s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(1);
+    this.phase=off;this.room=room;this.armed=false;this.st=0;}
+  tick(t){const q=(t+this.phase)%2400,st=q<1400?0:q<1700?1:2;
+    if(st!==this.st){this.st=st;this.setTexture('sp'+st);this.armed=st===2;if(st===2)SFX.tone(220,.05,'square',-80,.03);}}
+}
+/* NOUVEAU — Boule de feu rebondissante (rebondit sur murs/décor, reste dans sa salle) */
+class Fireball extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y,room,i){
+    super(s,x,y,'fireball');s.add.existing(this);s.physics.add.existing(this);
+    this.setCircle(5,1,1).setBounce(1,1);this.room=room;this.vx=(i%2?-1:1)*52;this.vy=(i%3?1:-1)*44;this.setDepth(y+8);
+  }
+  tick(cur,t,s){
+    if(this.room!==cur){this.setVelocity(0);return;}                       // figée hors de la salle active
+    const b=this.body;if(!b.velocity.x&&!b.velocity.y)this.setVelocity(this.vx,this.vy);
+    const L=ox(this.room)+20,U=oy(this.room)+20;                            // garde-fous contre les couloirs
+    if(this.x<L){this.x=L;b.velocity.x=Math.abs(b.velocity.x);}if(this.x>L+216){this.x=L+216;b.velocity.x=-Math.abs(b.velocity.x);}
+    if(this.y<U){this.y=U;b.velocity.y=Math.abs(b.velocity.y);}if(this.y>U+184){this.y=U+184;b.velocity.y=-Math.abs(b.velocity.y);}
+    if(((t/60)|0)%3===0)s.embers.explode(1,this.x,this.y);                  // traînée de braises
+  }
+}
+/* NOUVEAU — Flèche du joueur (sprite orienté selon la direction) */
+class Arrow extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y,face){
+    super(s,x,y,'arrow');s.add.existing(this);s.physics.add.existing(this);const d=DIRS[face];
+    this.body.setSize(6,6).setOffset(5,5);
+    this.setRotation({up:0,right:Math.PI/2,down:Math.PI,left:-Math.PI/2}[face]).setVelocity(d.x*190,d.y*190);
+  }
+}
+
+class Breakable extends Phaser.Physics.Arcade.Sprite{   // buissons / pots
+  constructor(s,x,y,kind){super(s,x,y,kind);s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(y+8);}
+  smash(){this.scene.debris.explode(8,this.x,this.y);this.scene.drop(this.x,this.y,.45);SFX.play('break');this.destroy();}
+}
+
+class Chest extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y,content){
+    super(s,x,y,'chest_closed');s.add.existing(this);s.physics.add.existing(this,true);
+    this.content=content;this.opened=false;this.setDepth(y+8);
+    this.prompt=s.add.text(x,y-16,'E',{font:'bold 8px monospace',color:'#fff',backgroundColor:'#000'}).setOrigin(.5).setDepth(9000).setVisible(false);
+  }
+  open(){if(this.opened)return false;this.opened=true;this.setTexture('chest_open');this.prompt.destroy();this.prompt=null;SFX.play('chest');return true;}
+}
+
+class Door extends Phaser.Physics.Arcade.Sprite{
+  constructor(s,x,y){super(s,x,y,'door');s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(y+16);this.opening=false;}
+}
+
+/* =====================================================================
+   SCÈNE PRINCIPALE
+   ===================================================================== */
+class MainScene extends Phaser.Scene{
+  constructor(){super('MainScene');}
+
+  create(){
+    makeTextures(this);
+    // --- État de partie (réinitialisé à chaque restart de la scène)
+    this.room=START;this.rubies=0;this.keyCount=0;this.over=false;this.moving=false;this.msgT=0;this.hit=new Set();
+    this.boss=null;this.npc=null;this.dialogOpen=false;this.talked=false;this.ammo=-1;this.nextArrow=0;this.nextDust=0; // NOUVEAU
+    SFX.mood='calm';SFX.startMusic();
+    this.physics.world.setBounds(0,YOFF,RW*GW,RH*GW);
+    this.cameras.main.setScroll(ox(START),oy(START)-YOFF);
+
+    // --- Sol : un tileSprite par salle (la dernière = donjon en pierre)
+    for(let r=0;r<NROOMS;r++)this.add.tileSprite(ox(r),oy(r),RW,RH,LAYOUT[r].stone?'stone':'grass').setOrigin(0).setDepth(0);
+
+    // --- Groupes (groupes simples : chaque objet porte son propre corps)
+    this.trees=this.physics.add.staticGroup();
+    ['breakables','chests','doors','enemies','projectiles','pickups','arrows','fires','plates','spikes'].forEach(n=>this[n]=this.add.group());
+    this.buildWorld();
+    this.player=new Player(this,rx(START,2),ry(START,6.5));this.player.hasBow=false;
+
+    // --- Particules : étincelles (impact) et débris (destruction de décor)
+    this.sparks=this.add.particles(0,0,'spark',{speed:{min:40,max:110},lifespan:260,scale:{start:1.4,end:0},emitting:false}).setDepth(9999);
+    this.debris=this.add.particles(0,0,'spark',{speed:{min:30,max:90},lifespan:400,gravityY:150,scale:{start:2,end:0},tint:[0x3fb83f,0x2d8a2d,0x8b5a2b],emitting:false}).setDepth(9999);
+    // NOUVEAU : poussière sous les pas et braises des boules de feu
+    this.dust=this.add.particles(0,0,'spark',{speed:{min:6,max:20},lifespan:320,scale:{start:1.6,end:0},alpha:{start:.7,end:0},tint:[0xc8b88a,0xa89a70],emitting:false}).setDepth(5);
+    this.embers=this.add.particles(0,0,'spark',{speed:{min:10,max:30},lifespan:350,scale:{start:1.4,end:0},tint:[0xff8800,0xffdd00],emitting:false}).setDepth(9000);
+
+    this.setupCollisions();
+
+    // --- Entrées : flèches + ZQSD (AZERTY) + WASD (QWERTY), ESPACE = épée, E = interagir
+    this.cursors=this.input.keyboard.createCursorKeys();
+    this.K=this.input.keyboard.addKeys('Z,Q,S,D,W,A,E,F,SPACE');
+    this.input.on('pointerdown',()=>this.fire());   // NOUVEAU : clic = tir à l'arc
+
+    this.sync();
+    if(!this.scene.isActive('HUD'))this.scene.launch('HUD');
+    this.time.delayedCall(400,()=>this.msg('ESPACE: épée · E: agir · I: inventaire'));
+  }
+
+  // Construit murs (arbres), props, coffres, porte, ennemis et relique depuis LAYOUT
+  buildWorld(){
+
+    for(let rm=0;rm<NROOMS;rm++){
+      for(let c=0;c<16;c++)for(let r=0;r<14;r++){
+        // NOUVEAU : ouvertures sur les 4 murs (couloirs de 2 tuiles : lignes 6-7 à gauche/droite, colonnes 7-8 en haut/bas)
+        const O=OPEN[rm],hg=c===7||c===8,vg=r===6||r===7;
+        const edge=(r===0&&!(O.u&&hg))||(r===13&&!(O.d&&hg))||(c===0&&!(O.l&&vg))||(c===15&&!(O.r&&vg));
+        if(edge){const tr=this.trees.create(rx(rm,c),ry(rm,r),'tree').setDepth(ry(rm,r)+8);if(LAYOUT[rm].stone)tr.setTint(0x8888aa);}
+      }
+      const L=LAYOUT[rm];
+      (L.bush||[]).forEach(([c,r])=>this.breakables.add(new Breakable(this,rx(rm,c),ry(rm,r),'bush')));
+      (L.pot||[]).forEach(([c,r])=>this.breakables.add(new Breakable(this,rx(rm,c),ry(rm,r),'pot')));
+      (L.chest||[]).forEach(([c,r,k])=>this.chests.add(new Chest(this,rx(rm,c),ry(rm,r),k)));
+      (L.enemy||[]).forEach(([t,c,r])=>this.enemies.add(new Enemy(this,rx(rm,c),ry(rm,r),t,rm)));
+      // NOUVEAU : porte à clé ('lock') ou grille ouverte par une dalle ('gate') sur le mur droit
+      ['lock','gate'].forEach(k=>{if(L[k]){const d=new Door(this,rx(rm,15),ry(rm,6.5));d.kind=k;if(k==='gate')d.setTint(0x9aa0b8);this.doors.add(d);}});
+      (L.plate||[]).forEach(([c,r])=>this.plates.add(new Plate(this,rx(rm,c),ry(rm,r))));
+      (L.spikes||[]).forEach(([c,r],i)=>this.spikes.add(new Spikes(this,rx(rm,c),ry(rm,r),i*350,rm)));
+      (L.fire||[]).forEach(([c,r],i)=>this.fires.add(new Fireball(this,rx(rm,c),ry(rm,r),rm,i)));
+      if(L.npc)this.npc=new NPC(this,rx(rm,L.npc[0]),ry(rm,L.npc[1]));                                  // NOUVEAU
+      if(L.boss){this.boss=new Boss(this,rx(rm,L.boss[0]),ry(rm,L.boss[1]),rm);this.enemies.add(this.boss);} // NOUVEAU
+    }
+  }
+
+  setupCollisions(){
+    const p=this.player,P=this.physics.add;
+    // Solides : le joueur et les ennemis sont bloqués, les projectiles se brisent dessus
+    [this.trees,this.breakables,this.chests,this.doors].forEach(g=>{
+      if(g!==this.doors)P.collider(p,g);
+      P.collider(this.enemies,g);
+      P.collider(this.projectiles,g,pr=>pr.destroy());
+      P.collider(this.fires,g);                                              // les boules de feu rebondissent
+      P.collider(this.arrows,g,(a,o)=>{this.sparks.explode(3,a.x,a.y);a.destroy();if(o.smash)o.smash();}); // flèche brise buissons/pots
+    });
+    // Porte : la collision physique bloque ; si le joueur a une clé, on consomme et ouvre
+    P.collider(p,this.doors,(pl,d)=>{
+      if(d.opening)return;
+      if(d.kind==='gate'){if(this.time.now>this.msgT){this.msgT=this.time.now+1500;this.msg('Une grille bloque le passage...');SFX.play('hit');}return;}
+      if(this.keyCount>0){
+        d.opening=true;this.keyCount--;this.sync();SFX.play('door');this.puff(d.x,d.y);this.msg('Porte déverrouillée !');
+        this.time.delayedCall(0,()=>d.destroy()); // destruction différée (hors boucle de collision)
+      }else if(this.time.now>this.msgT){this.msgT=this.time.now+1500;this.msg('Verrouillée... il faut une clé');SFX.play('hit');}
+    });
+    // Épée -> ennemis (dégâts + knockback + étincelles)
+    P.overlap(p.sword,this.enemies,(sw,e)=>{
+      if(this.hit.has(e))return;this.hit.add(e);
+      const crit=Math.random()<.2;                         // NOUVEAU : 20% de coups critiques (x2 dégâts + flash)
+      this.sparks.explode(crit?14:6,e.x,e.y);SFX.play(crit?'crit':'hit');if(crit)this.critFx(e.x,e.y);
+      e.hurt(p,crit?2:1);});
+    // Épée -> objets destructibles
+    P.overlap(p.sword,this.breakables,(sw,b)=>{if(this.hit.has(b))return;this.hit.add(b);this.sparks.explode(5,b.x,b.y);b.smash();});
+    // Épée -> décor solide : étincelles seulement
+    [this.trees,this.chests,this.doors].forEach(g=>P.overlap(p.sword,g,(sw,o)=>{
+      if(this.hit.has(o))return;this.hit.add(o);this.sparks.explode(4,sw.x,sw.y);SFX.play('hit');}));
+    // Dégâts subis
+    P.overlap(p,this.enemies,(pl,e)=>this.hurtPlayer(e));
+    P.overlap(p,this.projectiles,(pl,pr)=>{const s={x:pr.x,y:pr.y};pr.destroy();this.hurtPlayer(s);});
+    // NOUVEAU : flèches, dalles, pièges
+    P.overlap(this.arrows,this.enemies,(a,e)=>{this.sparks.explode(5,a.x,a.y);SFX.play('hit');e.hurt(a);a.destroy();});
+    P.overlap(p,this.plates,(pl,pt)=>this.press(pt));
+    P.overlap(this.arrows,this.plates,(a,pt)=>{a.destroy();this.press(pt);});   // une flèche active la dalle à distance
+    P.overlap(p,this.spikes,(pl,sp)=>{if(sp.armed)this.hurtPlayer(sp);});
+    P.overlap(p,this.fires,(pl,f)=>this.hurtPlayer(f));
+    // Ramassage
+    P.overlap(p,this.pickups,(pl,it)=>this.collect(it));
+    if(this.npc)P.collider(p,this.npc);   // NOUVEAU : le PNJ est solide
+  }
+
+  update(t){
+    if(this.over||this.moving)return;
+    const K=this.K,C=this.cursors,pl=this.player;
+    if(this.dialogOpen){   // NOUVEAU : pendant un dialogue le joueur est figé, E fait avancer le texte
+      pl.setVelocity(0);pl.anims.stop();pl.setTexture(`p_${pl.face}_0`);
+      if(Phaser.Input.Keyboard.JustDown(K.E)&&this.scene.get('HUD').advanceDialog()){this.dialogOpen=false;this.sync();}
+      return;
+    }
+    const ix=((K.D.isDown||C.right.isDown)?1:0)-((K.Q.isDown||K.A.isDown||C.left.isDown)?1:0);
+    const iy=((K.S.isDown||C.down.isDown)?1:0)-((K.Z.isDown||K.W.isDown||C.up.isDown)?1:0);
+    pl.update(t,ix,iy);
+    if(Phaser.Input.Keyboard.JustDown(K.SPACE))pl.attack(t);
+    if(Phaser.Input.Keyboard.JustDown(K.E))this.interact();
+    if(Phaser.Input.Keyboard.JustDown(K.F))this.fire();
+    this.fires.getChildren().forEach(f=>f.tick(this.room,t,this));
+    this.spikes.getChildren().forEach(sp=>{if(sp.room===this.room)sp.tick(t);});
+    if((pl.body.velocity.x||pl.body.velocity.y)&&t>this.nextDust){this.nextDust=t+140;this.dust.explode(1,pl.x,pl.y+7);} // poussière
+
+    this.enemies.getChildren().forEach(e=>e.room===this.room?e.tick(t,pl):e.setVelocity(0)); // seuls les ennemis de la salle active agissent
+    // Y-SORTING : la profondeur = position des pieds -> relief 2D correct
+    [pl,...this.enemies.getChildren(),...this.projectiles.getChildren(),...this.pickups.getChildren(),...this.fires.getChildren(),...this.arrows.getChildren()].forEach(o=>o.setDepth(o.y+8));
+    // Les projectiles qui sortent de la salle sont détruits
+    [...this.projectiles.getChildren(),...this.arrows.getChildren()].forEach(pr=>{if(pr.x<ox(this.room)||pr.x>ox(this.room)+RW||pr.y<oy(this.room)||pr.y>oy(this.room)+RH)pr.destroy();});
+    // Invite "E" au-dessus des coffres proches
+    this.chests.getChildren().forEach(c=>{if(c.prompt)c.prompt.setVisible(Phaser.Math.Distance.Between(pl.x,pl.y,c.x,c.y)<26);});
+    if(this.npc)this.npc.prompt.setVisible(Phaser.Math.Distance.Between(pl.x,pl.y,this.npc.x,this.npc.y)<28);
+    this.checkRoom();
+  }
+
+  // Transition d'écran : on détecte le changement de salle, on fige la physique et on fait glisser la caméra
+  checkRoom(){
+    const pl=this.player,gx=Phaser.Math.Clamp(Math.floor(pl.x/RW),0,GW-1),gy=Phaser.Math.Clamp(Math.floor((pl.y-YOFF)/RH),0,GW-1),r=gy*GW+gx;
+    if(r===this.room)return;
+    const dx=gx-this.room%GW,dy=gy-Math.floor(this.room/GW);   // NOUVEAU : direction de la transition (4 sens)
+    this.room=r;this.moving=true;this.physics.pause();pl.anims.stop();
+    SFX.mood=r===BOSS_ROOM?'boss':'calm';this.syncBoss();
+    this.projectiles.clear(true,true);this.arrows.clear(true,true);
+    pl.body.reset(pl.x+dx*10,pl.y+dy*10);                    // petit pas dans la nouvelle salle
+    this.tweens.add({targets:this.cameras.main,scrollX:gx*RW,scrollY:gy*RH,duration:500,ease:'Sine.inOut',
+      onComplete:()=>{this.moving=false;this.physics.resume();}});
+  }
+
+  // --- Interactions ------------------------------------------------------
+  interact(){
+    const p=this.player;
+    if(this.npc&&Phaser.Math.Distance.Between(p.x,p.y,this.npc.x,this.npc.y)<28){   // NOUVEAU : parler au PNJ
+      this.dialogOpen=true;SFX.tone(440,.1,'triangle');
+      this.scene.get('HUD').openDialog(this.talked?['Retrouve la relique sacrée au bout du donjon, voyageur !']:[
+        'Bienvenue voyageur...','Notre village est en danger. La relique sacrée a été volée !',
+        'Retrouve la relique sacrée au bout du donjon ! Un gardien la protège.',
+        'Un coffre cache la clé de la porte scellée. Que les dieux guident ton épée...']);
+      this.talked=true;return;
+    }
+    for(const c of this.chests.getChildren()){
+      if(c.opened||Phaser.Math.Distance.Between(p.x,p.y,c.x,c.y)>=26||!c.open())continue;
+      const icon=this.add.image(c.x,c.y-6,({key:'key',bow:'bow'})[c.content]||'ruby').setDepth(9999);
+      this.tweens.add({targets:icon,y:c.y-26,duration:500});
+      this.time.delayedCall(1100,()=>icon.destroy());
+      if(c.content==='key'){this.keyCount++;this.msg('Vous obtenez une clé !');}
+      else if(c.content==='bow'){this.player.hasBow=true;this.ammo=12;this.msg('Arc obtenu ! F ou clic : tirer');}
+      else{this.rubies+=5;this.msg('+5 rubis !');}
+      this.sync();break;
+    }
+  }
+  shoot(e,pl,off=0){
+    const pr=new Projectile(this,e.x,e.y);this.projectiles.add(pr);
+    pr.fire(Phaser.Math.Angle.Between(e.x,e.y,pl.x,pl.y)+off);SFX.play('shoot');
+  }
+  drop(x,y,chance){if(Math.random()<chance)this.spawnPickup(x,y,this.ammo>=0&&Math.random()<.35?'arrow':Math.random()<.5?'heart':'ruby');}
+  spawnPickup(x,y,kind){
+    const it=this.physics.add.sprite(x,y,kind);it.kind=kind;it.body.setSize(10,10).setOffset(3,3);
+    this.pickups.add(it);this.tweens.add({targets:it,y:y-3,duration:350,yoyo:true,repeat:-1});
+  }
+  collect(it){
+    if(it.kind==='heart'){if(this.player.hp>=this.player.maxHp)return;this.player.hp++;SFX.play('heart');}
+    else if(it.kind==='arrow'){this.ammo+=3;SFX.play('ruby');}
+    else{this.rubies++;SFX.play('ruby');}
+    it.destroy();this.sync();
+  }
+  // NOUVEAU — tir à l'arc (F / clic) : 1 flèche par tir, cadence 450 ms
+  fire(){
+    const p=this.player,t=this.time.now;
+    if(!p.hasBow||this.over||this.moving||this.dialogOpen||t<this.nextArrow||t<p.stunUntil)return;
+    if(this.ammo<=0){this.nextArrow=t+600;SFX.tone(150,.08,'square');this.msg('Plus de flèches !');return;}
+    this.nextArrow=t+450;this.ammo--;this.sync();
+    const d=DIRS[p.face];this.arrows.add(new Arrow(this,p.x+d.x*10,p.y+d.y*10-1,p.face));SFX.play('arrow');
+  }
+  // NOUVEAU — dalle de pression : ouvre toutes les grilles
+  press(pt){
+    if(pt.pressed)return;pt.pressed=true;pt.setTexture('plate_on');SFX.play('door');this.cameras.main.shake(150,.004);
+    this.doors.getChildren().slice().forEach(d=>{if(d.kind==='gate'){this.puff(d.x,d.y);this.time.delayedCall(0,()=>d.destroy());}});
+    this.msg("Clac ! Une grille s'ouvre...");
+  }
+  // NOUVEAU — polish : onde de choc (anneau qui grandit), flash de lumière additif, effet de coup critique
+  shockwave(x,y,color){
+    SFX.tone(90,.25,'sawtooth',-40,.08);
+    const c=this.add.circle(x,y,10).setStrokeStyle(2,color).setDepth(9998);
+    this.tweens.add({targets:c,scale:5,alpha:0,duration:420,onComplete:()=>c.destroy()});
+    this.cameras.main.shake(100,.004);
+  }
+  flashLight(x,y){
+    const c=this.add.circle(x,y,10,0xffffcc,.9).setBlendMode(Phaser.BlendModes.ADD).setDepth(9998);
+    this.tweens.add({targets:c,scale:3.5,alpha:0,duration:220,onComplete:()=>c.destroy()});
+  }
+  critFx(x,y){
+    this.flashLight(x,y);this.cameras.main.flash(80,255,255,200);
+    const t=this.add.text(x,y-8,'CRIT!',{font:'bold 8px monospace',color:'#ffee66'}).setOrigin(.5).setDepth(9999);
+    this.tweens.add({targets:t,y:y-26,alpha:0,duration:600,onComplete:()=>t.destroy()});
+  }
+  puff(x,y){this.sparks.explode(10,x,y);}
+
+  // --- Combat joueur : knockback + invulnérabilité 1s avec clignotement
+  hurtPlayer(src){
+    const p=this.player,t=this.time.now;
+    if(t<p.invulUntil||this.over)return;
+    p.hp--;p.invulUntil=t+1000;p.stunUntil=t+220;
+    const a=Math.atan2(p.y-src.y,p.x-src.x);p.setVelocity(Math.cos(a)*170,Math.sin(a)*170);
+    this.tweens.add({targets:p,alpha:.2,duration:70,yoyo:true,repeat:6,onComplete:()=>p.setAlpha(1)});
+    this.cameras.main.shake(120,.006);SFX.play('hurt');this.sync();
+    if(p.hp<=0)this.gameOver(false);
+  }
+  gameOver(win){
+    if(this.over)return;this.over=true;this.physics.pause();
+    const score=this.rubies*10+(win?100:0),best=Math.max(score,store.get());store.set(best);
+    if(!win){this.tweens.killTweensOf(this.player);SFX.play('die');
+      this.tweens.add({targets:this.player,angle:360,alpha:0,duration:600});}
+    else SFX.play('chest');
+    this.time.delayedCall(win?300:800,()=>this.scene.get('HUD').showEnd(win,score,best));
+  }
+
+  // --- Communication avec le HUD (registre global + événement de jeu)
+  sync(){const r=this.registry;r.set('hp',this.player.hp);r.set('maxHp',this.player.maxHp);r.set('rubies',this.rubies);r.set('keys',this.keyCount);r.set('ammo',this.ammo);
+    r.set('quest',this.talked?'Retrouver la relique sacrée au bout du donjon':'Parler au vieillard du village');this.syncBoss();}
+  // NOUVEAU : PV du boss envoyés au HUD seulement dans sa salle (-1 = barre cachée)
+  syncBoss(){this.registry.set('boss',(this.boss&&this.boss.active&&this.room===BOSS_ROOM)?this.boss.hp:-1);}
+  // NOUVEAU : la relique apparaît à la mort du boss ; la toucher déclenche la victoire
+  spawnRelic(x,y){
+    const rel=this.physics.add.staticImage(x,y,'relic').setDepth(200);
+    this.tweens.add({targets:rel,alpha:.4,duration:500,yoyo:true,repeat:-1});
+    this.physics.add.overlap(this.player,rel,()=>this.gameOver(true));
+  }
+  msg(s){this.game.events.emit('msg',s);}
+}
+
+/* =====================================================================
+   HUD : scène parallèle (cœurs, rubis, clés, messages, écran de fin)
+   ===================================================================== */
+class HUD extends Phaser.Scene{
+  constructor(){super('HUD');}
+  create(){
+    const st={font:'bold 8px monospace',color:'#ffffff'};
+    this.add.rectangle(0,0,W,YOFF,0x000000).setOrigin(0);
+    this.hearts=[0,1,2].map(i=>this.add.image(8+i*10,8,'heart').setScale(.5));
+    this.add.image(100,8,'ruby').setScale(.5);this.rub=this.add.text(106,8,'x0',st).setOrigin(0,.5);
+    this.add.image(150,8,'key').setScale(.5);this.key=this.add.text(156,8,'x0',st).setOrigin(0,.5);
+    this.arrI=this.add.image(184,8,'arrow').setScale(.5).setVisible(false);this.arr=this.add.text(190,8,'',st).setOrigin(0,.5); // NOUVEAU : munitions
+    this.add.text(W-4,8,'Record '+store.get(),{font:'8px monospace',color:'#aaaaaa'}).setOrigin(1,.5);
+    this.msgTxt=this.add.text(W/2,H-4,'',{font:'bold 8px monospace',color:'#ffffff',backgroundColor:'#000000'}).setOrigin(.5,1).setAlpha(0);
+
+    // Écran de fin (caché) : fond sombre, titre, scores, bouton cliquable
+    this.endT=this.add.text(W/2,80,'',{font:'bold 20px monospace',color:'#ff4040'}).setOrigin(.5);
+    this.endS=this.add.text(W/2,118,'',{font:'bold 10px monospace',color:'#ffffff',align:'center'}).setOrigin(.5);
+    const btn=this.add.text(W/2,164,'[ REJOUER ]',{font:'bold 12px monospace',color:'#ffd700'}).setOrigin(.5)
+      .setInteractive({useHandCursor:true}).on('pointerdown',()=>this.restart());
+    this.end=this.add.container(0,0,[this.add.rectangle(0,0,W,H,0x000000,.78).setOrigin(0),this.endT,this.endS,btn,
+      this.add.text(W/2,184,'ou appuyez sur Entrée',{font:'8px monospace',color:'#aaaaaa'}).setOrigin(.5)]).setVisible(false).setDepth(100);
+    this.endShown=false;
+    this.input.keyboard.on('keydown-ENTER',()=>this.restart());
+
+    // ---- NOUVEAU : barre de vie du boss (cachée tant que le joueur n'est pas dans sa salle)
+    this.bossFill=this.add.rectangle(W/2-60,31,120,4,0xe02020).setOrigin(0,.5);
+    this.bossBar=this.add.container(0,0,[this.add.rectangle(W/2,31,124,8,0x000000).setStrokeStyle(1,0xffffff),this.bossFill,
+      this.add.text(W/2,22,'GARDIEN',{font:'bold 8px monospace',color:'#ffd700'}).setOrigin(.5)]).setVisible(false).setDepth(50);
+
+    // ---- NOUVEAU : boîte de dialogue rétro (texte "machine à écrire")
+    this.dlgTxt=this.add.text(16,H-60,'',{font:'8px monospace',color:'#ffffff',wordWrap:{width:W-32},lineSpacing:3});
+    this.dlg=this.add.container(0,0,[this.add.rectangle(W/2,H-36,W-12,60,0x000020).setStrokeStyle(2,0xffffff),this.dlgTxt,
+      this.add.text(W-14,H-12,'[E] suite',{font:'8px monospace',color:'#ffd700'}).setOrigin(1)]).setVisible(false).setDepth(90);
+    this.typing=false;this.dtimer=null;
+
+    // ---- NOUVEAU : écran d'inventaire / pause (I ou TAB)
+    this.inv=this.add.container(0,0).setDepth(95).setVisible(false);this.invT={};this.invOpen=false;
+    const mkRow=(y,icon,id)=>{this.invT[id]=this.add.text(88,y,'',st).setOrigin(0,.5);this.inv.add([this.add.image(72,y,icon).setScale(.75),this.invT[id]]);};
+    this.inv.add([this.add.rectangle(0,0,W,H,0x000000,.7).setOrigin(0),
+      this.add.rectangle(W/2,120,216,176).setFillStyle(0x101030,.95).setStrokeStyle(2,0xffffff),
+      this.add.text(W/2,50,'INVENTAIRE',{font:'bold 12px monospace',color:'#ffd700'}).setOrigin(.5)]);
+    mkRow(72,'sword','sword');mkRow(90,'bow','bow');mkRow(108,'heart','heart');mkRow(126,'ruby','ruby');mkRow(144,'key','key');
+    this.invT.quest=this.add.text(W/2,166,'',{font:'8px monospace',color:'#9fe0ff',align:'center',wordWrap:{width:190}}).setOrigin(.5,0);
+    this.inv.add([this.invT.quest,this.add.text(W/2,198,'I / TAB : reprendre · M : musique',{font:'8px monospace',color:'#aaaaaa'}).setOrigin(.5)]);
+    this.input.keyboard.addCapture('TAB');   // empêche TAB de sortir du canvas
+    ['I','TAB'].forEach(k=>this.input.keyboard.on('keydown-'+k,()=>this.toggleInv()));
+    this.input.keyboard.on('keydown-M',()=>{SFX.musicOn=!SFX.musicOn;});   // coupe / relance la musique
+
+    this.registry.events.on('changedata',this.refresh,this); // MAJ auto quand MainScene change hp/rubis/clés
+    this.game.events.on('msg',this.showMsg,this);
+    this.refresh();
+  }
+  refresh(){
+    const r=this.registry;
+    this.hearts.forEach((h,i)=>h.setTint(i<r.get('hp')?0xffffff:0x333333));
+    this.rub.setText('x'+(r.get('rubies')||0));this.key.setText('x'+(r.get('keys')||0));
+    const am=r.get('ammo');this.arrI.setVisible(am>=0);this.arr.setText(am>=0?'x'+am:'');
+    const b=r.get('boss');this.bossBar.setVisible(b>=0);this.bossFill.setSize(120*Math.max(b||0,0)/BOSS_HP,4);   // NOUVEAU
+  }
+  showMsg(s){
+    this.tweens.killTweensOf(this.msgTxt);
+    this.msgTxt.setText(' '+s+' ').setAlpha(1);
+    this.tweens.add({targets:this.msgTxt,alpha:0,delay:2500,duration:500});
+  }
+  // ---- NOUVEAU : dialogue. advanceDialog() renvoie true quand le dialogue est terminé.
+  openDialog(lines){this.dl=lines;this.di=0;this.dlg.setVisible(true);this.typeLine(lines[0]);}
+  typeLine(str){
+    this.full=str;this.dlgTxt.setText('');this.typing=true;let i=0;
+    if(this.dtimer)this.dtimer.remove();
+    this.dtimer=this.time.addEvent({delay:28,repeat:str.length-1,callback:()=>{
+      i++;this.dlgTxt.setText(str.slice(0,i));
+      if(i>=str.length)this.typing=false;else if(i%3===0)SFX.tone(520,.03,'square',0,.02);}});
+  }
+  advanceDialog(){
+    if(this.typing){this.dtimer.remove();this.dlgTxt.setText(this.full);this.typing=false;return false;} // 1er appui : affiche tout
+    if(++this.di<this.dl.length){this.typeLine(this.dl[this.di]);return false;}
+    this.dlg.setVisible(false);return true;
+  }
+  // ---- NOUVEAU : inventaire. scene.pause() fige physique, tweens, timers et IA de MainScene.
+  toggleInv(){
+    const m=this.scene.get('MainScene');
+    if(this.invOpen){this.invOpen=false;this.inv.setVisible(false);m.scene.resume();return;}
+    if(this.endShown||m.over||m.moving||m.dialogOpen)return;
+    this.invOpen=true;this.refreshInv();this.inv.setVisible(true);m.scene.pause();
+  }
+  refreshInv(){
+    const r=this.registry,t=this.invT;
+    t.sword.setText('Épée du voyageur');
+    t.heart.setText(`Cœurs max : ${r.get('maxHp')}  (vie ${r.get('hp')})`);
+    t.ruby.setText('Rubis : '+r.get('rubies'));t.key.setText('Clés : '+r.get('keys'));
+    t.bow.setText(r.get('ammo')>=0?'Arc · flèches : '+r.get('ammo'):'Arc : introuvé');
+    t.quest.setText('Quête : '+r.get('quest'));
+  }
+  showEnd(win,score,best){
+    this.endShown=true;this.end.setVisible(true);
+    this.endT.setText(win?'VICTOIRE !':'GAME OVER').setColor(win?'#ffd700':'#ff4040');
+    this.endS.setText(`Score : ${score}\nMeilleur : ${best}`);
+  }
+  restart(){
+    if(!this.endShown)return;
+    this.endShown=false;this.end.setVisible(false);
+    this.scene.get('MainScene').scene.restart();
+  }
+}
+
+/* =====================================================================
+   CONFIGURATION PHASER : pixel art net + mise à l'échelle FIT
+   ===================================================================== */
+new Phaser.Game({
+  type:Phaser.AUTO,width:W,height:H,backgroundColor:'#000000',
+  pixelArt:true,roundPixels:true,                        // NEAREST + positions entières
+  scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH},
+  physics:{default:'arcade',arcade:{debug:false}},       // passer debug:true pour voir les hitboxes
+  scene:[MainScene,HUD]
+});
+</script>
+</body>
+</html>
