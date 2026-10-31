@@ -2,23 +2,31 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Zelda-like Prototype — Phaser 3</title>
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   canvas{image-rendering:pixelated} /* NEAREST neighbor : aucun flou lors du zoom */
+  /* NOUVEAU : commandes tactiles (visibles uniquement sur écran tactile) */
+  body{touch-action:none;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  #touch{display:none;position:fixed;inset:0;pointer-events:none;z-index:10;font:bold 12px monospace;color:#fff}
+  @media (pointer:coarse){#touch{display:block}}
+  #touch *{touch-action:none}
+  #pad{position:absolute;left:16px;bottom:24px;width:130px;height:130px;border-radius:50%;background:rgba(255,255,255,.12);border:2px solid rgba(255,255,255,.35);pointer-events:auto}
+  #knob{position:absolute;left:35px;top:35px;width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,.35)}
+  .tb{position:absolute;width:58px;height:58px;border-radius:50%;background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;text-align:center;pointer-events:auto}
+  .tb:active{background:rgba(255,255,255,.45)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
-  <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-PQQ0QX5YH7"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-PQQ0QX5YH7');
-</script>
 </head>
 <body>
+<div id="touch">
+  <div id="pad"><div id="knob"></div></div>
+  <div class="tb" data-b="atk" style="right:14px;bottom:70px">ÉPÉE</div>
+  <div class="tb" data-b="bow" style="right:84px;bottom:30px">ARC</div>
+  <div class="tb" data-b="act" style="right:84px;bottom:100px">AGIR</div>
+  <div class="tb" data-b="inv" style="right:8px;top:8px;width:44px;height:44px">INV</div>
+</div>
 <script>
 /* =====================================================================
    CONSTANTES & DONNÉES
@@ -66,7 +74,7 @@ const SFX={
   unlock(){try{this.ctx=this.ctx||new (window.AudioContext||window.webkitAudioContext)();this.ctx.resume();}catch(e){}},
   startMusic(){
     if(this.mt)return;                                   // une seule boucle, même après un restart
-    ['keydown','pointerdown'].forEach(e=>window.addEventListener(e,()=>this.unlock())); // les navigateurs exigent un geste
+    ['keydown','pointerdown','touchend','click'].forEach(e=>window.addEventListener(e,()=>this.unlock())); // les navigateurs exigent un geste
     const M={calm:[0,3,7,3,5,7,10,7,12,10,7,5,3,5,7,null],   // demi-tons depuis La3 (gamme pentatonique mineure)
              boss:[0,3,0,6,0,3,0,7,0,3,0,6,0,10,8,6]};       // thème plus nerveux pour le donjon
     const f=n=>220*Math.pow(2,n/12);
@@ -378,7 +386,7 @@ class MainScene extends Phaser.Scene{
     // --- Entrées : flèches + ZQSD (AZERTY) + WASD (QWERTY), ESPACE = épée, E = interagir
     this.cursors=this.input.keyboard.createCursorKeys();
     this.K=this.input.keyboard.addKeys('Z,Q,S,D,W,A,E,F,SPACE');
-    this.input.on('pointerdown',()=>this.fire());   // NOUVEAU : clic = tir à l'arc
+    this.input.on('pointerdown',p=>{if(!p.wasTouch)this.fire();});   // NOUVEAU : clic = tir à l'arc
 
     this.sync();
     if(!this.scene.isActive('HUD'))this.scene.launch('HUD');
@@ -455,19 +463,20 @@ class MainScene extends Phaser.Scene{
   }
 
   update(t){
-    if(this.over||this.moving)return;
+    if(this.over||this.moving){TOUCH.atk=TOUCH.bow=TOUCH.act=0;return;}
     const K=this.K,C=this.cursors,pl=this.player;
-    if(this.dialogOpen){   // NOUVEAU : pendant un dialogue le joueur est figé, E fait avancer le texte
+    if(this.dialogOpen){TOUCH.atk=TOUCH.bow=0;   // NOUVEAU : pendant un dialogue le joueur est figé, E fait avancer le texte
       pl.setVelocity(0);pl.anims.stop();pl.setTexture(`p_${pl.face}_0`);
-      if(Phaser.Input.Keyboard.JustDown(K.E)&&this.scene.get('HUD').advanceDialog()){this.dialogOpen=false;this.sync();}
+      if((Phaser.Input.Keyboard.JustDown(K.E)||this.tap('act'))&&this.scene.get('HUD').advanceDialog()){this.dialogOpen=false;this.sync();}
       return;
     }
-    const ix=((K.D.isDown||C.right.isDown)?1:0)-((K.Q.isDown||K.A.isDown||C.left.isDown)?1:0);
-    const iy=((K.S.isDown||C.down.isDown)?1:0)-((K.Z.isDown||K.W.isDown||C.up.isDown)?1:0);
+    let ix=((K.D.isDown||C.right.isDown)?1:0)-((K.Q.isDown||K.A.isDown||C.left.isDown)?1:0);
+    let iy=((K.S.isDown||C.down.isDown)?1:0)-((K.Z.isDown||K.W.isDown||C.up.isDown)?1:0);
+    ix=Phaser.Math.Clamp(ix+TOUCH.x,-1,1);iy=Phaser.Math.Clamp(iy+TOUCH.y,-1,1);   // NOUVEAU : joystick tactile
     pl.update(t,ix,iy);
-    if(Phaser.Input.Keyboard.JustDown(K.SPACE))pl.attack(t);
-    if(Phaser.Input.Keyboard.JustDown(K.E))this.interact();
-    if(Phaser.Input.Keyboard.JustDown(K.F))this.fire();
+    if(Phaser.Input.Keyboard.JustDown(K.SPACE)||this.tap('atk'))pl.attack(t);
+    if(Phaser.Input.Keyboard.JustDown(K.E)||this.tap('act'))this.interact();
+    if(Phaser.Input.Keyboard.JustDown(K.F)||this.tap('bow'))this.fire();
     this.fires.getChildren().forEach(f=>f.tick(this.room,t,this));
     this.spikes.getChildren().forEach(sp=>{if(sp.room===this.room)sp.tick(t);});
     if((pl.body.velocity.x||pl.body.velocity.y)&&t>this.nextDust){this.nextDust=t+140;this.dust.explode(1,pl.x,pl.y+7);} // poussière
@@ -533,6 +542,7 @@ class MainScene extends Phaser.Scene{
     else{this.rubies++;SFX.play('ruby');}
     it.destroy();this.sync();
   }
+  tap(k){const v=TOUCH[k];TOUCH[k]=0;return v;}   // NOUVEAU : lit puis consomme un bouton tactile
   // NOUVEAU — tir à l'arc (F / clic) : 1 flèche par tir, cadence 450 ms
   fire(){
     const p=this.player,t=this.time.now;
@@ -707,7 +717,28 @@ class HUD extends Phaser.Scene{
 /* =====================================================================
    CONFIGURATION PHASER : pixel art net + mise à l'échelle FIT
    ===================================================================== */
-new Phaser.Game({
+/* NOUVEAU — COMMANDES TACTILES : le joystick met à jour TOUCH.x/y ; les boutons lèvent un drapeau consommé par MainScene.tap() */
+const TOUCH={x:0,y:0,atk:0,bow:0,act:0};
+(()=>{
+  const pad=document.getElementById('pad'),knob=document.getElementById('knob');let pid=null;
+  const move=e=>{
+    const r=pad.getBoundingClientRect();
+    let dx=(e.clientX-r.left-r.width/2)/(r.width/2),dy=(e.clientY-r.top-r.height/2)/(r.height/2);
+    const m=Math.hypot(dx,dy);if(m>1){dx/=m;dy/=m;}
+    knob.style.transform=`translate(${dx*35}px,${dy*35}px)`;
+    TOUCH.x=Math.abs(dx)>.3?Math.sign(dx):0;TOUCH.y=Math.abs(dy)>.3?Math.sign(dy):0;   // zone morte + 8 directions
+  };
+  pad.addEventListener('pointerdown',e=>{pid=e.pointerId;pad.setPointerCapture(pid);move(e);e.preventDefault();});
+  pad.addEventListener('pointermove',e=>{if(e.pointerId===pid)move(e);});
+  const stop=e=>{if(e.pointerId!==pid)return;pid=null;TOUCH.x=TOUCH.y=0;knob.style.transform='';};
+  pad.addEventListener('pointerup',stop);pad.addEventListener('pointercancel',stop);
+  document.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('pointerdown',e=>{
+    e.preventDefault();SFX.unlock();const k=b.dataset.b;
+    if(k==='inv')GAME.scene.getScene('HUD').toggleInv();else TOUCH[k]=1;
+  }));
+})();
+
+const GAME=new Phaser.Game({
   type:Phaser.AUTO,width:W,height:H,backgroundColor:'#000000',
   pixelArt:true,roundPixels:true,                        // NEAREST + positions entières
   scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH},
