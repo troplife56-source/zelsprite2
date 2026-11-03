@@ -6,18 +6,18 @@ Un mini Action-RPG rétro 2D en vue du dessus, inspiré des classiques de l'aven
 
 ## 🎮 Le jeu
 
-Un voleur a dérobé la relique sacrée du village. Parle au vieux sage, explore le donjon et affronte le Gardien pour la récupérer.
+Un voleur a dérobé la relique sacrée du village. Parle au sage, explore la Crypte puis la Forge, vaincs deux boss et reprends la relique.
 
-- **Un donjon en grille 3×3** : 9 salles reliées par des couloirs, avec une transition de caméra fluide.
-- **Le village** : un PNJ te donne ta quête (dialogue « machine à écrire »).
-- **Combat** : épée directionnelle avec coups critiques, knockback, invulnérabilité clignotante, Slimes qui chargent et Octoroks qui tirent.
-- **Décor destructible** : buissons et pots qui lâchent cœurs, rubis et flèches.
-- **Énigmes** : une dalle de pression ouvre une grille, un coffre cache la clé de la porte scellée.
-- **L'arc** : trouvé dans un coffre, il tire à distance et peut activer une dalle.
-- **Pièges** : pics qui sortent du sol et boules de feu rebondissantes.
-- **Boss** : le Gardien a une barre de vie, tire en rafales, frappe le sol (onde de choc) et enrage à mi-vie.
-- **Aides** : objectif affiché en permanence, mini-carte des salles visitées, inventaire / pause.
-- **Sauvegarde automatique** : la progression est enregistrée dans le navigateur ; l'écran d'accueil propose **Continuer** ou **Nouvelle partie**. Après une défaite, on peut aussi **Continuer** sur place (−25 points).
+- **Un monde en grille 5×3** : 15 salles (village, Crypte, Forge, grotte, marais, salles au trésor) avec transitions de caméra et mini-carte.
+- **Deux donjons, deux boss** : le **Gardien** de la Crypte (charge, rafales, coup au sol) et le **Golem de feu** de la Forge (anneaux de projectiles, boules de feu invoquées). Le Gardien scelle la route de la Forge.
+- **Portes variées** : clé, dalle de pression, salle à vider, sceau de boss.
+- **Bestiaire** : slimes, octoroks, chauves-souris rapides, chevaliers qui chargent après un flash rouge.
+- **Boutique** : le marchand du village vend potion, flèches, épée forgée (dégâts ×2) et cœurs max. Les rubis servent enfin à quelque chose.
+- **Progression** : réceptacles de cœur cachés (jusqu'à 8 cœurs), arc dans la grotte, trésors derrière une grille du marais.
+- **Rejouabilité** : record de temps, score, et **Mode Héros** (ennemis renforcés, score ×2) débloqué à la première victoire.
+- **Combat** : épée directionnelle avec coups critiques, knockback, invulnérabilité clignotante, arc, pièges (pics, boules de feu).
+- **Aides** : objectif permanent, inventaire / pause, musique chiptune qui change selon le lieu.
+- **Sauvegarde automatique** : écran d'accueil **Continuer** / **Nouvelle partie**. Après une défaite, **Continuer** sur place (−25 points).
 
 ## 🕹️ Commandes
 
@@ -25,7 +25,8 @@ Un voleur a dérobé la relique sacrée du village. Parle au vieux sage, explore
 |---|---|
 | ZQSD / WASD / Flèches | Se déplacer (8 directions) |
 | Espace | Coup d'épée |
-| E | Interagir (parler, ouvrir un coffre) |
+| E | Interagir (parler, ouvrir un coffre, lire un panneau) |
+| 1 à 4 | Acheter chez le marchand |
 | F ou clic | Tirer à l'arc (une fois trouvé) |
 | I ou Tab | Inventaire / pause |
 | M | Couper / relancer la musique |
