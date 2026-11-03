@@ -17,6 +17,7 @@ Un voleur a dérobé la relique sacrée du village. Parle au sage, explore la Cr
 - **Rejouabilité** : record de temps, score, et **Mode Héros** (ennemis renforcés, score ×2) débloqué à la première victoire.
 - **Combat** : épée directionnelle avec coups critiques, knockback, invulnérabilité clignotante, arc, pièges (pics, boules de feu).
 - **Aides** : objectif permanent, inventaire / pause, musique chiptune qui change selon le lieu.
+- **Respect de la vie privée** : bandeau de consentement (Google Consent Mode) ; Analytics désactivé tant que le joueur n'accepte pas.
 - **Sauvegarde automatique** : écran d'accueil **Continuer** / **Nouvelle partie**. Après une défaite, **Continuer** sur place (−25 points).
 
 ## 🕹️ Commandes

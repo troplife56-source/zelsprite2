@@ -10,6 +10,9 @@
 <script>
   window.dataLayer=window.dataLayer||[];
   function gtag(){dataLayer.push(arguments);}
+  /* Consent Mode v2 : tout est refusé par défaut (RGPD). Le choix du joueur est mémorisé et appliqué avant la config. */
+  gtag('consent','default',{ad_storage:'denied',ad_user_data:'denied',ad_personalization:'denied',analytics_storage:'denied',wait_for_update:500});
+  try{if(localStorage.getItem('relique.consent')==='yes')gtag('consent','update',{analytics_storage:'granted'});}catch(e){}
   gtag('js',new Date());gtag('config','G-PQQ0QX5YH7');
 </script>
 <style>
@@ -37,6 +40,9 @@
   @keyframes pulse{50%{filter:brightness(1.25)}}
   #start .touchtxt{display:none}
   @media (pointer:coarse){#start .keytxt{display:none}#start .touchtxt{display:block}}
+  #cookie{position:fixed;left:0;right:0;bottom:0;z-index:30;display:none;padding:12px 16px;background:#14102a;border-top:2px solid #ffd700;color:#eee;font:13px/1.4 monospace;text-align:center}
+  #cookie button{margin:8px 6px 0;padding:8px 18px;font:bold 13px monospace;border-radius:5px;cursor:pointer;border:2px solid #ffd700}
+  #cookie .ok{background:#ffd700;color:#1a1200}#cookie .no{background:transparent;color:#ffd700}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 </head>
@@ -55,6 +61,8 @@
     <p id="best"></p>
   </div>
 </div>
+<div id="cookie">Ce jeu utilise Google Analytics (mesure d'audience anonyme) pour s'améliorer. Acceptes-tu les cookies de mesure ? Le jeu fonctionne pareil si tu refuses. La sauvegarde reste stockée uniquement dans ton navigateur.<br>
+  <button class="ok" id="ck-yes">Accepter</button><button class="no" id="ck-no">Refuser</button></div>
 <div id="touch">
   <div id="pad"><div id="knob"></div></div>
   <div class="tb" data-b="atk" style="right:14px;bottom:70px">ÉPÉE</div>
@@ -1164,6 +1172,17 @@ if(SV){   // sauvegarde trouvée : CONTINUER devient le bouton principal
   const pl=document.getElementById('play');pl.textContent='NOUVELLE PARTIE';pl.classList.add('alt');
   document.getElementById('saveinfo').textContent='Sauvegarde : '+(SV.visited||[]).length+'/'+NROOMS+' salles · '+(SV.rubies||0)+' rubis · '+fmtTime(SV.secs||0)+(SV.hero?' · HÉROS':'');
 }
+/* BANDEAU DE CONSENTEMENT (RGPD) : choix mémorisé, modifiable en vidant les données du site */
+(()=>{
+  const b=document.getElementById('cookie');let c=null;
+  try{c=localStorage.getItem('relique.consent');}catch(e){}
+  if(!c&&b)b.style.display='block';
+  const set=v=>{try{localStorage.setItem('relique.consent',v);}catch(e){}
+    try{gtag('consent','update',{analytics_storage:v==='yes'?'granted':'denied'});}catch(e){}
+    if(b)b.style.display='none';};
+  const y=document.getElementById('ck-yes'),n=document.getElementById('ck-no');
+  if(y)y.addEventListener('click',()=>set('yes'));if(n)n.addEventListener('click',()=>set('no'));
+})();
 </script>
 </body>
 </html>
