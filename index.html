@@ -3,7 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Zelda-like Prototype — Phaser 3</title>
+<title>La Relique Sacrée — Action-RPG pixel art</title>
+<meta name="description" content="Action-RPG rétro en pixel art : village, donjon 3x3, arc, pièges et boss. Jouable sur PC et mobile.">
+<!-- NOUVEAU : Google Analytics 4 (balise standard). Les événements de jeu sont envoyés par la fonction track() plus bas. -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-PQQ0QX5YH7"></script>
+<script>
+  window.dataLayer=window.dataLayer||[];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js',new Date());gtag('config','G-PQQ0QX5YH7');
+</script>
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden}
   canvas{image-rendering:pixelated} /* NEAREST neighbor : aucun flou lors du zoom */
@@ -16,25 +24,42 @@
   #knob{position:absolute;left:35px;top:35px;width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,.35)}
   .tb{position:absolute;width:58px;height:58px;border-radius:50%;background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.4);display:flex;align-items:center;justify-content:center;text-align:center;pointer-events:auto}
   .tb:active{background:rgba(255,255,255,.45)}
+  /* NOUVEAU : écran d'accueil (sert aussi de "geste" utilisateur pour débloquer le son) */
+  #start{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;text-align:center;font-family:monospace;color:#fff;
+    background:radial-gradient(ellipse at 50% 30%,#4a1e5c 0%,#0a0a2a 70%)}
+  #start h1{margin:0 0 8px;font-size:clamp(34px,9vw,72px);line-height:1;color:#ffd700;text-shadow:4px 4px 0 #5a3200,0 0 30px rgba(255,200,0,.35);letter-spacing:2px}
+  #start p{margin:6px 16px;color:#ddd;font-size:clamp(12px,2.6vw,16px)}
+  #play,#cont{margin:18px 8px 6px;padding:14px 40px;font:bold clamp(18px,4vw,26px) monospace;color:#1a1200;background:#ffd700;border:0;border-radius:6px;box-shadow:0 5px 0 #8a6a00;cursor:pointer;animation:pulse 1.2s infinite}
+  #play:active,#cont:active{transform:translateY(3px);box-shadow:0 2px 0 #8a6a00}
+  #cont{display:none}   /* affiché seulement s'il existe une sauvegarde */
+  #play.alt{background:transparent;color:#ffd700;border:2px solid #ffd700;box-shadow:none;animation:none;font-size:clamp(13px,3vw,18px);padding:10px 24px}
+  @keyframes pulse{50%{filter:brightness(1.25)}}
+  #start .touchtxt{display:none}
+  @media (pointer:coarse){#start .keytxt{display:none}#start .touchtxt{display:block}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
- <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-PQQ0QX5YH7"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-PQQ0QX5YH7');
-</script>
 </head>
 <body>
+<div id="start">
+  <div>
+    <h1>LA RELIQUE<br>SACRÉE</h1>
+    <p>Action-RPG rétro en pixel art</p>
+    <p>Trouve la clé, l'arc, affronte le Gardien du donjon.</p>
+    <button id="cont">⟳ CONTINUER</button><br>
+    <button id="play">▶ JOUER</button>
+    <p id="saveinfo"></p>
+    <p class="keytxt">ZQSD / flèches : bouger · ESPACE : épée · E : agir · F : arc · I : inventaire</p>
+    <p class="touchtxt">Joystick à gauche · boutons ÉPÉE / ARC / AGIR à droite</p>
+    <p id="best"></p>
+  </div>
+</div>
 <div id="touch">
   <div id="pad"><div id="knob"></div></div>
   <div class="tb" data-b="atk" style="right:14px;bottom:70px">ÉPÉE</div>
   <div class="tb" data-b="bow" style="right:84px;bottom:30px">ARC</div>
   <div class="tb" data-b="act" style="right:84px;bottom:100px">AGIR</div>
   <div class="tb" data-b="inv" style="right:8px;top:8px;width:44px;height:44px">INV</div>
+  <div class="tb" data-b="snd" style="right:60px;top:8px;width:44px;height:44px">SON</div>
 </div>
 <script>
 /* =====================================================================
@@ -66,6 +91,26 @@ const LAYOUT=[
 ];
 const OPEN=LAYOUT.map(()=>({}));   // OPEN[salle] = {u,d,l,r} côtés ouverts
 LAYOUT.forEach((L,i)=>[...(L.ex||'')].forEach(d=>{const j=i+{u:-GW,d:GW,l:-1,r:1}[d];OPEN[i][d]=1;OPEN[j][{u:'d',d:'u',l:'r',r:'l'}[d]]=1;}));
+
+/* NOUVEAU — SUIVI ANALYTICS : track() envoie un événement GA4 ; ne casse jamais le jeu (hors ligne, bloqueur de pub...).
+   trackOnce() n'envoie un événement qu'une fois par partie (SEEN est vidé à chaque nouvelle partie). */
+let STARTED=false;   // devient true quand le joueur clique sur JOUER
+const SEEN=new Set();
+function track(name,params){
+  try{if(typeof gtag==='function')gtag('event',name,Object.assign({device:(navigator.maxTouchPoints>0&&matchMedia('(pointer:coarse)').matches)?'mobile':'pc'},params||{}));}catch(e){}
+}
+function trackOnce(name,params){if(SEEN.has(name))return;SEEN.add(name);track(name,params);}
+
+/* NOUVEAU — SAUVEGARDE AUTOMATIQUE (localStorage, 100 % locale au navigateur du joueur).
+   On sauvegarde la progression : salle + position, inventaire, drapeaux de quête, et les objets déjà consommés
+   (buissons cassés, coffres ouverts, ennemis tués, repérés par un identifiant stable "sid"). Les cœurs sont restaurés à fond au chargement. */
+const SAVE={
+  KEY:'relique.save.v1',
+  get(){try{const o=JSON.parse(localStorage.getItem(this.KEY));return(o&&o.v===1&&typeof o.room==='number'&&typeof o.x==='number')?o:null;}catch(e){return null;}},
+  set(o){try{localStorage.setItem(this.KEY,JSON.stringify(o));}catch(e){}},
+  clear(){try{localStorage.removeItem(this.KEY);}catch(e){}}
+};
+let PENDING=null;   // sauvegarde à appliquer dès que MainScene est prête (si le joueur clique avant la fin du chargement)
 
 // Persistance du meilleur score (try/catch : localStorage peut être bloqué)
 const store={
@@ -261,7 +306,7 @@ class Enemy extends Phaser.Physics.Arcade.Sprite{
     this.setTintFill(0xffffff);this.scene.time.delayedCall(100,()=>this.active&&this.clearTint());
     if(this.hp<=0)this.die();
   }
-  die(){this.scene.puff(this.x,this.y);this.scene.drop(this.x,this.y,.5);this.destroy();} // surchargé par Boss
+  die(){const s=this.scene;s.gone.add(this.sid);s.puff(this.x,this.y);s.drop(this.x,this.y,.5);this.destroy();s.saveGame();} // surchargé par Boss
 }
 
 /* NOUVEAU — BOSS : Gardien blindé (6 PV). Fonce sur le joueur et tire des rafales en éventail ;
@@ -294,7 +339,7 @@ class Boss extends Enemy{
     const s=this.scene,x=this.x,y=this.y;
     for(let i=0;i<4;i++)s.puff(x+Phaser.Math.Between(-12,12),y+Phaser.Math.Between(-12,12));
     s.spawnPickup(x-14,y+8,'heart');s.spawnPickup(x+14,y+8,'heart');
-    this.destroy();s.spawnRelic(x,y);s.msg('Le gardien est vaincu !');
+    this.destroy();s.bossDead=true;s.sync();s.spawnRelic(x,y);s.msg('Le gardien est vaincu !');track('boss_defeated',{time_s:s.elapsed(),continues:s.continues});
   }
 }
 
@@ -343,7 +388,7 @@ class Arrow extends Phaser.Physics.Arcade.Sprite{
 
 class Breakable extends Phaser.Physics.Arcade.Sprite{   // buissons / pots
   constructor(s,x,y,kind){super(s,x,y,kind);s.add.existing(this);s.physics.add.existing(this,true);this.setDepth(y+8);}
-  smash(){this.scene.debris.explode(8,this.x,this.y);this.scene.drop(this.x,this.y,.45);SFX.play('break');this.destroy();}
+  smash(){const s=this.scene;s.gone.add(this.sid);s.debris.explode(8,this.x,this.y);s.drop(this.x,this.y,.45);SFX.play('break');this.destroy();s.saveGame();}
 }
 
 class Chest extends Phaser.Physics.Arcade.Sprite{
@@ -352,7 +397,7 @@ class Chest extends Phaser.Physics.Arcade.Sprite{
     this.content=content;this.opened=false;this.setDepth(y+8);
     this.prompt=s.add.text(x,y-16,'E',{font:'bold 8px monospace',color:'#fff',backgroundColor:'#000'}).setOrigin(.5).setDepth(9000).setVisible(false);
   }
-  open(){if(this.opened)return false;this.opened=true;this.setTexture('chest_open');this.prompt.destroy();this.prompt=null;SFX.play('chest');return true;}
+  open(){if(this.opened)return false;this.opened=true;this.scene.gone.add(this.sid);this.setTexture('chest_open');this.prompt.destroy();this.prompt=null;SFX.play('chest');return true;}
 }
 
 class Door extends Phaser.Physics.Arcade.Sprite{
@@ -370,6 +415,8 @@ class MainScene extends Phaser.Scene{
     // --- État de partie (réinitialisé à chaque restart de la scène)
     this.room=START;this.rubies=0;this.keyCount=0;this.over=false;this.moving=false;this.msgT=0;this.hit=new Set();
     this.boss=null;this.npc=null;this.dialogOpen=false;this.talked=false;this.ammo=-1;this.nextArrow=0;this.nextDust=0; // NOUVEAU
+    this.continues=0;this.t0=Date.now();this.visited=new Set([START]);this.lockOpen=false;this.gateOpen=false;this.bossDead=false;SEEN.clear(); // NOUVEAU : progression + suivi
+    this.gone=new Set();   // NOUVEAU : identifiants (sid) des objets déjà consommés, pour la sauvegarde
     SFX.mood='calm';SFX.startMusic();
     this.physics.world.setBounds(0,YOFF,RW*GW,RH*GW);
     this.cameras.main.setScroll(ox(START),oy(START)-YOFF);
@@ -381,6 +428,9 @@ class MainScene extends Phaser.Scene{
     this.trees=this.physics.add.staticGroup();
     ['breakables','chests','doors','enemies','projectiles','pickups','arrows','fires','plates','spikes'].forEach(n=>this[n]=this.add.group());
     this.buildWorld();
+    // NOUVEAU : identifiants stables = type + salle + rang de création (LAYOUT est déterministe, donc identique à chaque chargement)
+    [['breakables','b'],['chests','c'],['enemies','e']].forEach(([g,pre])=>{const n={};
+      this[g].getChildren().forEach(o=>{const rm=Math.floor(o.x/RW)+GW*Math.floor((o.y-YOFF)/RH);n[rm]=(n[rm]||0)+1;o.sid=pre+rm+'.'+n[rm];});});
     this.player=new Player(this,rx(START,2),ry(START,6.5));this.player.hasBow=false;
 
     // --- Particules : étincelles (impact) et débris (destruction de décor)
@@ -399,7 +449,8 @@ class MainScene extends Phaser.Scene{
 
     this.sync();
     if(!this.scene.isActive('HUD'))this.scene.launch('HUD');
-    this.time.delayedCall(400,()=>this.msg('ESPACE: épée · E: agir · I: inventaire'));
+    if(PENDING){this.applySave(PENDING);PENDING=null;}   // NOUVEAU : le joueur a cliqué CONTINUER avant la fin du chargement
+    else if(STARTED)this.time.delayedCall(400,()=>this.msg('ESPACE: épée · E: agir · I: inventaire')); // au 1er lancement, le message part de startGame()
   }
 
   // Construit murs (arbres), props, coffres, porte, ennemis et relique depuis LAYOUT
@@ -442,7 +493,7 @@ class MainScene extends Phaser.Scene{
       if(d.opening)return;
       if(d.kind==='gate'){if(this.time.now>this.msgT){this.msgT=this.time.now+1500;this.msg('Une grille bloque le passage...');SFX.play('hit');}return;}
       if(this.keyCount>0){
-        d.opening=true;this.keyCount--;this.sync();SFX.play('door');this.puff(d.x,d.y);this.msg('Porte déverrouillée !');
+        d.opening=true;this.keyCount--;this.lockOpen=true;this.sync();track('door_unlocked');SFX.play('door');this.puff(d.x,d.y);this.msg('Porte déverrouillée !');
         this.time.delayedCall(0,()=>d.destroy()); // destruction différée (hors boucle de collision)
       }else if(this.time.now>this.msgT){this.msgT=this.time.now+1500;this.msg('Verrouillée... il faut une clé');SFX.play('hit');}
     });
@@ -472,6 +523,7 @@ class MainScene extends Phaser.Scene{
   }
 
   update(t){
+    if(!STARTED)return;   // NOUVEAU : le jeu attend le clic sur JOUER
     if(this.over||this.moving){TOUCH.atk=TOUCH.bow=TOUCH.act=0;return;}
     const K=this.K,C=this.cursors,pl=this.player;
     if(this.dialogOpen){TOUCH.atk=TOUCH.bow=0;   // NOUVEAU : pendant un dialogue le joueur est figé, E fait avancer le texte
@@ -507,11 +559,14 @@ class MainScene extends Phaser.Scene{
     if(r===this.room)return;
     const dx=gx-this.room%GW,dy=gy-Math.floor(this.room/GW);   // NOUVEAU : direction de la transition (4 sens)
     this.room=r;this.moving=true;this.physics.pause();pl.anims.stop();
-    SFX.mood=r===BOSS_ROOM?'boss':'calm';this.syncBoss();
+    SFX.mood=r===BOSS_ROOM?'boss':'calm';
+    if(!this.visited.has(r)){this.visited.add(r);track('room_discovered',{room:r,count:this.visited.size});}
+    if(r===BOSS_ROOM)trackOnce('boss_reached');
+    this.sync();   // met à jour la mini-carte et l'objectif
     this.projectiles.clear(true,true);this.arrows.clear(true,true);
     pl.body.reset(pl.x+dx*10,pl.y+dy*10);                    // petit pas dans la nouvelle salle
     this.tweens.add({targets:this.cameras.main,scrollX:gx*RW,scrollY:gy*RH,duration:500,ease:'Sine.inOut',
-      onComplete:()=>{this.moving=false;this.physics.resume();}});
+      onComplete:()=>{this.moving=false;this.physics.resume();this.saveGame();}});
   }
 
   // --- Interactions ------------------------------------------------------
@@ -523,7 +578,7 @@ class MainScene extends Phaser.Scene{
         'Bienvenue voyageur...','Notre village est en danger. La relique sacrée a été volée !',
         'Retrouve la relique sacrée au bout du donjon ! Un gardien la protège.',
         'Un coffre cache la clé de la porte scellée. Que les dieux guident ton épée...']);
-      this.talked=true;return;
+      if(!this.talked)track('npc_talked');this.talked=true;this.sync();return;
     }
     for(const c of this.chests.getChildren()){
       if(c.opened||Phaser.Math.Distance.Between(p.x,p.y,c.x,c.y)>=26||!c.open())continue;
@@ -533,7 +588,7 @@ class MainScene extends Phaser.Scene{
       if(c.content==='key'){this.keyCount++;this.msg('Vous obtenez une clé !');}
       else if(c.content==='bow'){this.player.hasBow=true;this.ammo=12;this.msg('Arc obtenu ! F ou clic : tirer');}
       else{this.rubies+=5;this.msg('+5 rubis !');}
-      this.sync();break;
+      track('chest_opened',{content:c.content});this.sync();break;
     }
   }
   shoot(e,pl,off=0){
@@ -562,7 +617,7 @@ class MainScene extends Phaser.Scene{
   }
   // NOUVEAU — dalle de pression : ouvre toutes les grilles
   press(pt){
-    if(pt.pressed)return;pt.pressed=true;pt.setTexture('plate_on');SFX.play('door');this.cameras.main.shake(150,.004);
+    if(pt.pressed)return;pt.pressed=true;this.gateOpen=true;track('plate_pressed');this.sync();pt.setTexture('plate_on');SFX.play('door');this.cameras.main.shake(150,.004);
     this.doors.getChildren().slice().forEach(d=>{if(d.kind==='gate'){this.puff(d.x,d.y);this.time.delayedCall(0,()=>d.destroy());}});
     this.msg("Clac ! Une grille s'ouvre...");
   }
@@ -596,16 +651,72 @@ class MainScene extends Phaser.Scene{
   }
   gameOver(win){
     if(this.over)return;this.over=true;this.physics.pause();
-    const score=this.rubies*10+(win?100:0),best=Math.max(score,store.get());store.set(best);
+    const secs=this.elapsed(),score=Math.max(0,this.rubies*10+(win?100:0)-25*this.continues),best=Math.max(score,store.get());store.set(best);
+    track(win?'game_won':'game_over',{room:this.room,score:score,time_s:secs,continues:this.continues});
     if(!win){this.tweens.killTweensOf(this.player);SFX.play('die');
       this.tweens.add({targets:this.player,angle:360,alpha:0,duration:600});}
     else SFX.play('chest');
-    this.time.delayedCall(win?300:800,()=>this.scene.get('HUD').showEnd(win,score,best));
+    if(win)SAVE.clear();   // NOUVEAU : partie terminée -> plus de sauvegarde à reprendre
+    this.time.delayedCall(win?300:800,()=>this.scene.get('HUD').showEnd(win,score,best,secs));
+  }
+  // NOUVEAU — écrit la sauvegarde (appelée par sync(), à la fin d'une transition de salle, à la mort d'un ennemi, etc.)
+  saveGame(){
+    const p=this.player;
+    if(!STARTED||!p||!p.active||this.over||this.moving||p.hp<=0)return;
+    if(!(this.talked||this.visited.size>1))return;            // rien à sauvegarder tant que la partie n'a pas vraiment commencé
+    const gx=Phaser.Math.Clamp(Math.floor(p.x/RW),0,GW-1),gy=Phaser.Math.Clamp(Math.floor((p.y-YOFF)/RH),0,GW-1);
+    SAVE.set({v:1,room:gy*GW+gx,x:Math.round(p.x),y:Math.round(p.y),maxHp:p.maxHp,rubies:this.rubies,keys:this.keyCount,ammo:this.ammo,hasBow:!!p.hasBow,
+      talked:this.talked,lockOpen:this.lockOpen,gateOpen:this.gateOpen,bossDead:this.bossDead,bossHp:(this.boss&&this.boss.active)?this.boss.hp:0,
+      continues:this.continues,secs:this.elapsed(),visited:Array.from(this.visited),gone:Array.from(this.gone),saved:Date.now()});
+  }
+  // NOUVEAU — restaure une sauvegarde dans un monde fraîchement construit
+  applySave(sv){
+    const p=this.player,now=this.time.now;
+    this.gone=new Set(sv.gone||[]);
+    this.breakables.getChildren().slice().forEach(o=>{if(this.gone.has(o.sid))o.destroy();});          // buissons / pots déjà cassés
+    this.enemies.getChildren().slice().forEach(o=>{if(o!==this.boss&&this.gone.has(o.sid))o.destroy();}); // ennemis déjà tués
+    this.chests.getChildren().forEach(c=>{if(this.gone.has(c.sid)){c.opened=true;c.setTexture('chest_open');if(c.prompt){c.prompt.destroy();c.prompt=null;}}});
+    this.lockOpen=!!sv.lockOpen;this.gateOpen=!!sv.gateOpen;
+    this.doors.getChildren().slice().forEach(d=>{if((d.kind==='lock'&&this.lockOpen)||(d.kind==='gate'&&this.gateOpen))d.destroy();});
+    if(this.gateOpen)this.plates.getChildren().forEach(pt=>{pt.pressed=true;pt.setTexture('plate_on');});
+    this.rubies=sv.rubies||0;this.keyCount=sv.keys||0;this.ammo=(typeof sv.ammo==='number')?sv.ammo:-1;this.talked=!!sv.talked;this.continues=sv.continues||0;
+    this.visited=new Set(sv.visited||[]);this.t0=Date.now()-(sv.secs||0)*1000;
+    p.hasBow=!!sv.hasBow;p.maxHp=sv.maxHp||3;p.hp=p.maxHp;                 // cœurs pleins à la reprise
+    this.bossDead=!!sv.bossDead;
+    if(this.bossDead){if(this.boss)this.boss.destroy();this.spawnRelic(rx(BOSS_ROOM,8),ry(BOSS_ROOM,6));}
+    else if(this.boss&&sv.bossHp>0)this.boss.hp=sv.bossHp;
+    this.room=Phaser.Math.Clamp(sv.room,0,NROOMS-1);this.visited.add(this.room);
+    p.setPosition(sv.x,sv.y);p.body.reset(sv.x,sv.y);p.invulUntil=now+2000;
+    this.cameras.main.setScroll((this.room%GW)*RW,Math.floor(this.room/GW)*RH);                          // même formule que checkRoom()
+    SFX.mood=this.room===BOSS_ROOM?'boss':'calm';
+    this.sync();this.msg('Partie restaurée');
+  }
+  // NOUVEAU — CONTINUER : on repart sur place avec tous les cœurs et l'inventaire gardé (coût : -25 points au score final)
+  continueGame(){
+    const p=this.player,t=this.time.now;
+    this.continues++;this.tweens.killTweensOf(p);p.setAngle(0).setAlpha(1).setVelocity(0);
+    p.hp=p.maxHp;p.invulUntil=t+2500;p.stunUntil=0;
+    this.projectiles.clear(true,true);
+    this.enemies.getChildren().forEach(e=>{   // les ennemis proches sont repoussés pour ne pas piéger le joueur
+      if(e.room!==this.room||e===this.boss)return;
+      const a=Math.atan2(e.y-p.y,e.x-p.x);e.setVelocity(Math.cos(a)*120,Math.sin(a)*120);e.stunUntil=t+500;});
+    this.over=false;this.physics.resume();
+    this.tweens.add({targets:p,alpha:.3,duration:90,yoyo:true,repeat:12,onComplete:()=>p.setAlpha(1)});
+    this.sync();this.msg('On reprend ! (-25 pts)');track('game_continue',{room:this.room,continues:this.continues});
+  }
+  elapsed(){return Math.round((Date.now()-this.t0)/1000);}   // secondes depuis le début de la partie
+  // NOUVEAU — objectif courant, affiché sous la barre du HUD (guide le joueur dans le donjon non linéaire)
+  questText(){
+    if(!this.talked)return 'Parle au vieillard du village';
+    if(this.bossDead)return 'Prends la relique sacrée !';
+    if(this.lockOpen)return 'Vaincs le Gardien !';
+    if(this.keyCount>0)return 'Porte scellée : salle du haut, à droite';
+    return this.gateOpen?'Trouve la clé (salle à l\'est de la cour)':'Trouve la clé (indice : la dalle de la cour)';
   }
 
   // --- Communication avec le HUD (registre global + événement de jeu)
   sync(){const r=this.registry;r.set('hp',this.player.hp);r.set('maxHp',this.player.maxHp);r.set('rubies',this.rubies);r.set('keys',this.keyCount);r.set('ammo',this.ammo);
-    r.set('quest',this.talked?'Retrouver la relique sacrée au bout du donjon':'Parler au vieillard du village');this.syncBoss();}
+    r.set('quest',this.questText());r.set('room',this.room);r.set('visited',Array.from(this.visited));this.syncBoss();this.saveGame();}
   // NOUVEAU : PV du boss envoyés au HUD seulement dans sa salle (-1 = barre cachée)
   syncBoss(){this.registry.set('boss',(this.boss&&this.boss.active&&this.room===BOSS_ROOM)?this.boss.hp:-1);}
   // NOUVEAU : la relique apparaît à la mort du boss ; la toucher déclenche la victoire
@@ -629,18 +740,23 @@ class HUD extends Phaser.Scene{
     this.add.image(100,8,'ruby').setScale(.5);this.rub=this.add.text(106,8,'x0',st).setOrigin(0,.5);
     this.add.image(150,8,'key').setScale(.5);this.key=this.add.text(156,8,'x0',st).setOrigin(0,.5);
     this.arrI=this.add.image(184,8,'arrow').setScale(.5).setVisible(false);this.arr=this.add.text(190,8,'',st).setOrigin(0,.5); // NOUVEAU : munitions
-    this.add.text(W-4,8,'Record '+store.get(),{font:'8px monospace',color:'#aaaaaa'}).setOrigin(1,.5);
+    this.mm=this.add.graphics().setDepth(60);   // NOUVEAU : mini-carte 3x3 (salle courante en or, salles visitées en bleu)
     this.msgTxt=this.add.text(W/2,H-4,'',{font:'bold 8px monospace',color:'#ffffff',backgroundColor:'#000000'}).setOrigin(.5,1).setAlpha(0);
+    this.obj=this.add.text(4,19,'',{font:'8px monospace',color:'#ffe9a0',backgroundColor:'rgba(0,0,0,0.55)'}).setDepth(40);   // NOUVEAU : objectif en cours
 
     // Écran de fin (caché) : fond sombre, titre, scores, bouton cliquable
     this.endT=this.add.text(W/2,80,'',{font:'bold 20px monospace',color:'#ff4040'}).setOrigin(.5);
-    this.endS=this.add.text(W/2,118,'',{font:'bold 10px monospace',color:'#ffffff',align:'center'}).setOrigin(.5);
-    const btn=this.add.text(W/2,164,'[ REJOUER ]',{font:'bold 12px monospace',color:'#ffd700'}).setOrigin(.5)
+    this.endS=this.add.text(W/2,112,'',{font:'bold 10px monospace',color:'#ffffff',align:'center'}).setOrigin(.5);
+    // NOUVEAU : bouton CONTINUER (défaite seulement) + REJOUER
+    this.cBtn=this.add.text(W/2,152,'[ CONTINUER ]',{font:'bold 12px monospace',color:'#7CFC7C'}).setOrigin(.5)
+      .setInteractive({useHandCursor:true}).on('pointerdown',()=>this.continueRun());
+    this.rBtn=this.add.text(W/2,174,'[ REJOUER ]',{font:'bold 12px monospace',color:'#ffd700'}).setOrigin(.5)
       .setInteractive({useHandCursor:true}).on('pointerdown',()=>this.restart());
-    this.end=this.add.container(0,0,[this.add.rectangle(0,0,W,H,0x000000,.78).setOrigin(0),this.endT,this.endS,btn,
-      this.add.text(W/2,184,'ou appuyez sur Entrée',{font:'8px monospace',color:'#aaaaaa'}).setOrigin(.5)]).setVisible(false).setDepth(100);
-    this.endShown=false;
-    this.input.keyboard.on('keydown-ENTER',()=>this.restart());
+    this.endH=this.add.text(W/2,196,'',{font:'8px monospace',color:'#aaaaaa'}).setOrigin(.5);
+    this.end=this.add.container(0,0,[this.add.rectangle(0,0,W,H,0x000000,.78).setOrigin(0),this.endT,this.endS,this.cBtn,this.rBtn,this.endH]).setVisible(false).setDepth(100);
+    this.endShown=false;this.lastWin=false;
+    this.input.keyboard.on('keydown-ENTER',()=>{if(this.lastWin)this.restart();else this.continueRun();});   // Entrée : continuer (ou rejouer si victoire)
+    this.input.keyboard.on('keydown-R',()=>this.restart());
 
     // ---- NOUVEAU : barre de vie du boss (cachée tant que le joueur n'est pas dans sa salle)
     this.bossFill=this.add.rectangle(W/2-60,31,120,4,0xe02020).setOrigin(0,.5);
@@ -676,6 +792,9 @@ class HUD extends Phaser.Scene{
     this.rub.setText('x'+(r.get('rubies')||0));this.key.setText('x'+(r.get('keys')||0));
     const am=r.get('ammo');this.arrI.setVisible(am>=0);this.arr.setText(am>=0?'x'+am:'');
     const b=r.get('boss');this.bossBar.setVisible(b>=0);this.bossFill.setSize(120*Math.max(b||0,0)/BOSS_HP,4);   // NOUVEAU
+    const q=r.get('quest');this.obj.setText(q?' > '+q+' ':'').setVisible(!!q&&!(b>=0));   // objectif (caché pendant le boss : même zone que sa barre)
+    const g=this.mm,cur=r.get('room'),vis=r.get('visited')||[];g.clear();   // mini-carte
+    for(let i=0;i<9;i++)g.fillStyle(i===cur?0xffd700:vis.includes(i)?0x6a7ab0:0x2a2a40,1).fillRect(W-18+(i%3)*5,1+Math.floor(i/3)*5,4,4);
   }
   showMsg(s){
     this.tweens.killTweensOf(this.msgTxt);
@@ -700,7 +819,7 @@ class HUD extends Phaser.Scene{
   toggleInv(){
     const m=this.scene.get('MainScene');
     if(this.invOpen){this.invOpen=false;this.inv.setVisible(false);m.scene.resume();return;}
-    if(this.endShown||m.over||m.moving||m.dialogOpen)return;
+    if(!STARTED||this.endShown||m.over||m.moving||m.dialogOpen)return;
     this.invOpen=true;this.refreshInv();this.inv.setVisible(true);m.scene.pause();
   }
   refreshInv(){
@@ -711,14 +830,21 @@ class HUD extends Phaser.Scene{
     t.bow.setText(r.get('ammo')>=0?'Arc · flèches : '+r.get('ammo'):'Arc : introuvé');
     t.quest.setText('Quête : '+r.get('quest'));
   }
-  showEnd(win,score,best){
-    this.endShown=true;this.end.setVisible(true);
+  showEnd(win,score,best,secs){
+    this.endShown=true;this.lastWin=win;this.end.setVisible(true);
     this.endT.setText(win?'VICTOIRE !':'GAME OVER').setColor(win?'#ffd700':'#ff4040');
-    this.endS.setText(`Score : ${score}\nMeilleur : ${best}`);
+    this.endS.setText(`Score : ${score}\nMeilleur : ${best}\nTemps : ${Math.floor(secs/60)}:${String(secs%60).padStart(2,'0')}`);
+    this.cBtn.setVisible(!win);this.rBtn.setY(win?152:174);
+    this.endH.setText(win?'Entrée / R : rejouer':'Entrée : continuer (-25 pts) · R : recommencer');
+  }
+  continueRun(){   // NOUVEAU : reprise sur place après une défaite
+    if(!this.endShown||this.lastWin)return;
+    this.endShown=false;this.end.setVisible(false);
+    this.scene.get('MainScene').continueGame();
   }
   restart(){
     if(!this.endShown)return;
-    this.endShown=false;this.end.setVisible(false);
+    this.endShown=false;this.end.setVisible(false);track('game_restart');SAVE.clear();
     this.scene.get('MainScene').scene.restart();
   }
 }
@@ -743,7 +869,7 @@ const TOUCH={x:0,y:0,atk:0,bow:0,act:0};
   pad.addEventListener('pointerup',stop);pad.addEventListener('pointercancel',stop);
   document.querySelectorAll('[data-b]').forEach(b=>b.addEventListener('pointerdown',e=>{
     e.preventDefault();SFX.unlock();const k=b.dataset.b;
-    if(k==='inv')GAME.scene.getScene('HUD').toggleInv();else TOUCH[k]=1;
+    if(k==='inv')GAME.scene.getScene('HUD').toggleInv();else if(k==='snd')SFX.musicOn=!SFX.musicOn;else TOUCH[k]=1;
   }));
 })();
 
@@ -754,6 +880,30 @@ const GAME=new Phaser.Game({
   physics:{default:'arcade',arcade:{debug:false}},       // passer debug:true pour voir les hitboxes
   scene:[MainScene,HUD]
 });
+
+/* NOUVEAU — ÉCRAN D'ACCUEIL : le jeu démarre au clic / Entrée / Espace (ce geste débloque aussi l'audio du navigateur) */
+const SV=SAVE.get();   // sauvegarde éventuelle d'une visite précédente
+function startGame(resume){
+  if(STARTED)return;STARTED=true;
+  const o=document.getElementById('start');if(o)o.style.display='none';
+  SFX.unlock();
+  if(resume&&SV){
+    PENDING=SV;const sc=GAME.scene.getScene('MainScene');
+    if(sc&&sc.player){sc.applySave(SV);PENDING=null;}   // sinon MainScene l'appliquera à la fin de create()
+    track('game_resume',{room:SV.room,time_s:SV.secs,rubies:SV.rubies});
+  }else{SAVE.clear();track('game_start');}
+  try{GAME.events.emit('msg','ESPACE: épée · E: agir · I: inventaire');}catch(e){}
+}
+document.getElementById('play').addEventListener('click',()=>startGame(false));
+document.getElementById('cont').addEventListener('click',()=>startGame(true));
+window.addEventListener('keydown',e=>{if(!STARTED&&(e.key==='Enter'||e.key===' ')){e.preventDefault();startGame(!!SV);}});   // Entrée/Espace : reprend la partie s'il y en a une
+try{const b=+localStorage.getItem('zeldaProto.best')||0;if(b)document.getElementById('best').textContent='Meilleur score : '+b;}catch(e){}
+if(SV){   // sauvegarde trouvée : CONTINUER devient le bouton principal
+  const m=Math.floor((SV.secs||0)/60),sec=String((SV.secs||0)%60).padStart(2,'0');
+  document.getElementById('cont').style.display='inline-block';
+  const pl=document.getElementById('play');pl.textContent='NOUVELLE PARTIE';pl.classList.add('alt');
+  document.getElementById('saveinfo').textContent='Sauvegarde : '+(SV.visited||[]).length+'/9 salles · '+(SV.rubies||0)+' rubis · '+m+':'+sec;
+}
 </script>
 </body>
 </html>

@@ -1,29 +1,50 @@
-Zelscript — Action-RPG rétro (Phase 3) Un mini Action-RPG rétro 2D inspiré des classiques de l'aventure, développé entièrement en JavaScript pur ( Phaser 3 ) et HTML5 Canvas. Le jeu fonctionne dans un fichier HTML unique, sans aucun serveur local ni actif externe (les graphismes et les sons sont générés à la volée par le code).
+# Zelscript — Action-RPG rétro (« La Relique Sacrée »)
 
-🎮 Aperçu du gameplay Explorez un monde fantastique divisé en plusieurs salles, interagis avec les villageois, équipe ton épée, résous des énigmes avec des clés et affronte le Gardien final dans son donjon !
+Un mini Action-RPG rétro 2D en vue du dessus, inspiré des classiques de l'aventure, développé en JavaScript pur avec **Phaser 3**. Tout le jeu tient dans **un seul fichier HTML** : les graphismes et les sons sont générés par le code, sans aucun fichier externe.
 
-Salle 1 (Village) : Une zone de départ paisible. Parle au vieillard pour recevoir ta quête et casser les décors.
+**▶ Jouer en ligne : https://troplife56-source.github.io/zelsprite2/**
 
-Salles 2 & 3 (Exploration & Combat) : Affrontez des Slimes et des Octoroks à distance, détruisez les buissons/pots pour looter des cœurs et des rubis, et trouvez la clé cachée dans un coffre.
+## 🎮 Le jeu
 
-Salle 4 (Donjon du Boss) : Déverrouillez la porte scellée et affronte le Gardien blindé pour récupérer la relique sacrée et remporter la partie !
+Un voleur a dérobé la relique sacrée du village. Parle au vieux sage, explore le donjon et affronte le Gardien pour la récupérer.
 
-🕹️ Commandes et contrôles Touché Action ZQSD / WASD / Flèches Se déplacer (fluide à 8 directions) ESPACE Donner un coup d'épée E Interagir (parler au PNJ, ouvrir un coffre, lire des indices) Je suis ou TAB Ouvrir / Fermer le menu d'inventaire et mettre le jeu en pause M Couper ou relancer la musique chiptune de fond Entrée ou Clic Rejouer (sur l'écran de Game Over / Victoire)
+- **Un donjon en grille 3×3** : 9 salles reliées par des couloirs, avec une transition de caméra fluide.
+- **Le village** : un PNJ te donne ta quête (dialogue « machine à écrire »).
+- **Combat** : épée directionnelle avec coups critiques, knockback, invulnérabilité clignotante, Slimes qui chargent et Octoroks qui tirent.
+- **Décor destructible** : buissons et pots qui lâchent cœurs, rubis et flèches.
+- **Énigmes** : une dalle de pression ouvre une grille, un coffre cache la clé de la porte scellée.
+- **L'arc** : trouvé dans un coffre, il tire à distance et peut activer une dalle.
+- **Pièges** : pics qui sortent du sol et boules de feu rebondissantes.
+- **Boss** : le Gardien a une barre de vie, tire en rafales, frappe le sol (onde de choc) et enrage à mi-vie.
+- **Aides** : objectif affiché en permanence, mini-carte des salles visitées, inventaire / pause.
+- **Sauvegarde automatique** : la progression est enregistrée dans le navigateur ; l'écran d'accueil propose **Continuer** ou **Nouvelle partie**. Après une défaite, on peut aussi **Continuer** sur place (−25 points).
 
-🛠️ Lancement Rapide (Installation) Aucune installation complexe ni Node.js requise !
+## 🕹️ Commandes
 
-Enregistrez le code source sous le nom de index.html.
+| Touche | Action |
+|---|---|
+| ZQSD / WASD / Flèches | Se déplacer (8 directions) |
+| Espace | Coup d'épée |
+| E | Interagir (parler, ouvrir un coffre) |
+| F ou clic | Tirer à l'arc (une fois trouvé) |
+| I ou Tab | Inventaire / pause |
+| M | Couper / relancer la musique |
+| Entrée | Continuer (après une défaite) |
+| R | Recommencer (écran de fin) |
 
-Double-cliquez sur le fichier pour l'ouvrir dans votre navigateur web ( Chrome, Edge ou Firefox ).
+**Sur téléphone** : joystick virtuel à gauche, boutons ÉPÉE / ARC / AGIR à droite, plus INV et SON en haut.
 
-Note : Une connexion Internet est nécessaire au premier lancement pour charger la bibliothèque Phaser 3 via le CDN officiel.
+## 🛠️ Lancement rapide
 
-⚙️ Caractéristiques Techniques Moteur : Phaser 3 (via CDN)
+Aucune installation, pas de Node.js. Ouvre simplement `index.html` dans Chrome, Edge ou Firefox (connexion Internet nécessaire pour charger Phaser 3 depuis le CDN), ou joue directement via le lien ci-dessus.
 
-Audio : Web Audio API (effets sonores procéduraux et boucle musicale chiptune dynamique sans fichiers audio externes).
+## ⚙️ Technique
 
-Rendu Pixel Art : Optimisé avec pixelArt: trueet le filtre CSS image-rendering: pixelatedpour un rendu net et rétro sans flou.
+- **Moteur** : Phaser 3 (CDN), Arcade Physics, rendu pixel art net (`pixelArt: true`, mise à l'échelle FIT).
+- **Audio** : Web Audio API, effets et boucle musicale chiptune générés par le code.
+- **Architecture** : classes ES6 (`Player`, `Enemy`, `Boss`, `NPC`, `Chest`, `Door`, `Plate`, `Spikes`, `Fireball`, `Arrow`, `Projectile`, `Breakable`), deux scènes (`MainScene`, `HUD`), Y-sorting dynamique.
+- **Statistiques** : le jeu envoie des statistiques anonymes (démarrage, progression) à Google Analytics. La sauvegarde reste uniquement dans le navigateur du joueur (`localStorage`).
 
-Architecture : Code modulaire en classes ES6 (Joueur, Ennemi, Boss, PNJ, Coffre, Porte, HUD) séparé en deux scènes (MainSceneet HUD).
+## 📜 Licence
 
-📜 Licence Projet libre et open-source réalisé dans le cadre d'un prototype de développement web rétro.
+Projet libre et open-source réalisé dans le cadre d'un prototype de développement web rétro.
